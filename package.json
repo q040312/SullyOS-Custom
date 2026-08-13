@@ -1,0 +1,14 @@
+{
+  "name": "sully-custom-modpack",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Metadata-only Sully custom feature migration pack",
+  "type": "module",
+  "scripts": {
+    "check": "node --check scripts/security-rules.mjs && node --check scripts/preflight.mjs && node --check scripts/repo-safety.mjs && node --check scripts/schema-validator.mjs",
+    "test": "node --test test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

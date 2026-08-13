@@ -1,0 +1,1 @@
+{"id":"emotion-safety","status":"inventory","releaseBoundary":"formal","dependsOn":["core-integration"],"summary":"情绪底色短化、持久化边界与旧状态覆盖竞态修复。","containsSecrets":false,"applySupported":false}

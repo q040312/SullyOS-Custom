@@ -1,0 +1,1 @@
+{"id":"deployment-profile","status":"inventory","releaseBoundary":"formal","dependsOn":["memory-ombre","push-runtime","android-pwa"],"summary":"部署路由模板、环境变量名称、构建门禁与回滚检查。","containsSecrets":false,"applySupported":false}

@@ -1,0 +1,1 @@
+{"id":"nursery","status":"inventory","releaseBoundary":"formal","dependsOn":["core-integration","anthropic-api-cache"],"summary":"本地育儿室、成长相册、专属备份与绑定角色聊天工具。","containsSecrets":false,"applySupported":false}

@@ -1,0 +1,47 @@
+# Environment files: only the deliberately non-secret template may be tracked.
+.env*
+!.env.example
+
+# Credentials, signing material and platform service configuration.
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+google-services.json
+GoogleService-Info.plist
+
+# Build products and archives.
+*.apk
+*.aab
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+dist/
+node_modules/
+
+# User conversations, memory, backups and local databases.
+chat/
+chats/
+conversation/
+conversations/
+memory/
+memories/
+backup/
+backups/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlitedb
+
+# Logs and machine-local runtime state.
+*.log
+logs/
+.cache/
+.state/
+state/
+local/
+tmp/

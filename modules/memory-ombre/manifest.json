@@ -1,0 +1,1 @@
+{"id":"memory-ombre","status":"inventory","releaseBoundary":"formal","dependsOn":["core-integration"],"summary":"VPS 同步、Ombre 权威记忆、稳定认知、自我叙事与滚动归档。","containsSecrets":false,"applySupported":false}

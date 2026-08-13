@@ -1,0 +1,1 @@
+{"id":"shadow","status":"inventory","releaseBoundary":"experimental","dependsOn":["push-runtime"],"summary":"Shadow Push dry-run 研究清单；不属于当前正式功能。","containsSecrets":false,"applySupported":false}

@@ -1,0 +1,1 @@
+{"id":"core-integration","status":"inventory","releaseBoundary":"formal","dependsOn":[],"summary":"共享类型、数据库、全局状态与聊天主循环接线。","containsSecrets":false,"applySupported":false}

@@ -1,0 +1,1 @@
+{"id":"android-pwa","status":"inventory","releaseBoundary":"formal","dependsOn":["core-integration","push-runtime"],"summary":"Capacitor、Android WebView 兼容、PWA 与原生推送构建接线。","containsSecrets":false,"applySupported":false}

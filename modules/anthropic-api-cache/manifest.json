@@ -1,0 +1,1 @@
+{"id":"anthropic-api-cache","status":"inventory","releaseBoundary":"formal","dependsOn":["core-integration"],"summary":"Anthropic Native、Prompt Cache、TTL、图片转换与 API 日志。","containsSecrets":false,"applySupported":false}

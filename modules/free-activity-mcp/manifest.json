@@ -1,0 +1,1 @@
+{"id":"free-activity-mcp","status":"inventory","releaseBoundary":"formal","dependsOn":["core-integration","anthropic-api-cache"],"summary":"自由活动连续 Agent、通用 MCP、Cedar 适配、独立 API 与隐私审计。","containsSecrets":false,"applySupported":false}

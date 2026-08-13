@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "1.0",
+  "kind": "inventory-only",
+  "upstream": {
+    "baselineCommit": "4dc992f31e3fc426c91ef55f4d45d08d1ef0839d",
+    "formalReleasePath": "/var/www/sully.release-20260813-nursery-local-tools-v1"
+  },
+  "modules": [
+    { "id": "core-integration", "status": "inventory", "manifest": "modules/core-integration/manifest.json" },
+    { "id": "memory-ombre", "status": "inventory", "manifest": "modules/memory-ombre/manifest.json" },
+    { "id": "anthropic-api-cache", "status": "inventory", "manifest": "modules/anthropic-api-cache/manifest.json" },
+    { "id": "free-activity-mcp", "status": "inventory", "manifest": "modules/free-activity-mcp/manifest.json" },
+    { "id": "push-runtime", "status": "inventory", "manifest": "modules/push-runtime/manifest.json" },
+    { "id": "emotion-safety", "status": "inventory", "manifest": "modules/emotion-safety/manifest.json" },
+    { "id": "nursery", "status": "inventory", "manifest": "modules/nursery/manifest.json" },
+    { "id": "android-pwa", "status": "inventory", "manifest": "modules/android-pwa/manifest.json" },
+    { "id": "deployment-profile", "status": "inventory", "manifest": "modules/deployment-profile/manifest.json" },
+    { "id": "shadow", "status": "inventory", "manifest": "modules/shadow/manifest.json" }
+  ]
+}
