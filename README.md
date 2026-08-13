@@ -1,6 +1,6 @@
 # Sully 定制功能迁移包
 
-这是一个**私有、元数据优先**的迁移包骨架，用于记录未来将 Sully 定制能力从已确认的上游基线整理为可审查的集成候选。
+这是一个**私有、元数据优先**的迁移包，用于将 Sully 定制能力从已确认的上游基线整理为可审查的集成候选。
 
 ## 目标
 
@@ -10,8 +10,8 @@
 
 ## 非目标
 
-- 本仓库不包含真实功能补丁、应用脚本、密钥、部署配置或生产数据。
-- 当前所有模块均为 `inventory`，不能据此宣称可应用、可构建或已发布。
+- 只有 `emotion-safety` 是 `ready` 且可应用；其余模块仍为 `inventory`。
+- 不包含密钥、部署配置或生产数据；生产 evidence 只记录可复核事实，不替代完整源码快照。
 - 不会自动修改目标仓库、解决冲突、生成发布包或部署。
 
 ## 后续操作与批准
@@ -23,7 +23,9 @@
 ```powershell
 npm run check
 npm test
-node scripts/preflight.mjs --target <待检查的上游工作副本>
+node scripts/preflight.mjs --target .\sully-baseline-copy
+node scripts/apply-module.mjs emotion-safety --target .\sully-baseline-copy
+node scripts/apply-module.mjs emotion-safety --target .\sully-baseline-copy --write
 ```
 
 详见 [架构说明](docs/architecture.md) 与 [验收标准](docs/acceptance.md)。

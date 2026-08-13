@@ -5,8 +5,9 @@
   "description": "Metadata-only Sully custom feature migration pack",
   "type": "module",
   "scripts": {
-    "check": "node --check scripts/security-rules.mjs && node --check scripts/preflight.mjs && node --check scripts/repo-safety.mjs && node --check scripts/schema-validator.mjs",
-    "test": "node --test test"
+    "check": "node --check scripts/security-rules.mjs && node --check scripts/preflight.mjs && node --check scripts/repo-safety.mjs && node --check scripts/schema-validator.mjs && node --check scripts/apply-module.mjs && node --check scripts/verify-emotion.mjs",
+    "test": "node --test test",
+    "verify:emotion": "node scripts/verify-emotion.mjs"
   },
   "engines": {
     "node": ">=20"

@@ -1,0 +1,17 @@
+{
+  "module": "emotion-safety",
+  "formalWebRelease": {
+    "path": "/var/www/sully.release-20260813-nursery-local-tools-v1",
+    "archive": "nursery-local-tools-staging-20260813.tar.gz",
+    "sha256": "5AC00F070F48FAFFB3B938A26C5975BB92B11B0897ED2E1E72D763AF56C565B6",
+    "builtAt": "2026-08-13T20:34:00+08:00",
+    "bundle": "assets/memory-palace-CAB2KLDe.js",
+    "markers": [
+      "当前情绪底色·全局短期状态",
+      "这些 Buff 只影响此刻的语气、主动程度和回应策略。",
+      "不要复述 Buff 标签，也不要把触发它们的旧事件、物件、姿势、动作或临时场景带进当前回复。",
+      "具体事实只以当前对话或当前模式提供的上下文为准；缺少新依据时，不补全触发原因。"
+    ]
+  },
+  "limits": "The archive inspection confirms these exact marker strings exist in the named formal web bundle. It is not a complete source snapshot and does not establish later APK/current-dist artifacts, workers, or unrelated modules were deployed."
+}
