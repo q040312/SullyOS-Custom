@@ -1,1 +1,19 @@
-{"id":"free-activity-mcp","status":"inventory","releaseBoundary":"formal","dependsOn":["core-integration","anthropic-api-cache"],"summary":"自由活动连续 Agent、通用 MCP、Cedar 适配、独立 API 与隐私审计。","containsSecrets":false,"applySupported":false}
+{
+  "id": "free-activity-mcp",
+  "status": "ready",
+  "releaseBoundary": "formal",
+  "dependsOn": ["core-integration"],
+  "summary": "单次运行的自由活动 Agent：通用 MCP、独立 API 与最小化审计；不保存跨运行 Cedar 状态。",
+  "containsSecrets": false,
+  "applySupported": true,
+  "install": {
+    "mode": "patch",
+    "patch": "patches/8c3f03a.patch",
+    "base": {
+      "kind": "module-tree",
+      "module": "core-integration",
+      "tree": "8c3f03a2f1ad26b0b84bb614368cc0d8d453ba03"
+    },
+    "resultTree": "eea3cc83e2daa1898459b8b5045ee2a70af963f7"
+  }
+}

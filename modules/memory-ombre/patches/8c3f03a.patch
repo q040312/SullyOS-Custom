@@ -1,0 +1,3325 @@
+diff --git a/context/OSContext.tsx b/context/OSContext.tsx
+index 85979f8..a2b5dca 100644
+--- a/context/OSContext.tsx
++++ b/context/OSContext.tsx
+@@ -11,6 +11,9 @@ import { SULLY_DEFAULT_AVATAR_URL, shouldMigrateSullyAvatar } from '../utils/sul
+ import { exportStoryTheaterAppearanceSetting, restoreStoryTheaterAppearanceSetting } from '../utils/storyTheaterBackup';
+ import { createV2ArrayFieldWriter, writeV2Backup, assembleV2Backup, type BackupManifest, type ZipFileWriter, type ZipFileReader } from '../utils/backupFormat';
+ import { encodeVectorsForBackup, encodeVectorsForBackupChunked } from '../utils/memoryPalace/db';
++import type { RemoteVectorConfig } from '../utils/memoryPalace/types';
++import { resolveAuthoritativeConfig } from '../utils/memoryPalace/authority';
++import { exportRollingCycleStates, restoreRollingCycleStates } from '../utils/memoryPalace/rollingCycle';
+ import { ProactiveChat } from '../utils/proactiveChat';
+ import { VRScheduler } from '../utils/vrWorld/scheduler';
+ import { runVRSession } from '../utils/vrWorld/runSession';
+@@ -861,9 +864,23 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
+   const [memoryPalaceConfig, setMemoryPalaceConfig] = useState<MemoryPalaceGlobalConfig>(() => {
+     try { const s = localStorage.getItem('os_memory_palace_config'); return s ? { ...defaultMemoryPalaceConfig, ...JSON.parse(s) } : defaultMemoryPalaceConfig; } catch { return defaultMemoryPalaceConfig; }
+   });
+-  const defaultRemoteVectorConfig = { enabled: false, supabaseUrl: '', supabaseAnonKey: '', initialized: false };
++  const upstreamRemoteVectorDefault: RemoteVectorConfig = {
++    enabled: false,
++    provider: 'supabase',
++    supabaseUrl: '',
++    supabaseAnonKey: '',
++    ombreUrl: '',
++    ombreToken: '',
++    initialized: false,
++  };
++  const defaultRemoteVectorConfig: RemoteVectorConfig =
++    resolveAuthoritativeConfig(upstreamRemoteVectorDefault) || upstreamRemoteVectorDefault;
+   const [remoteVectorConfig, setRemoteVectorConfig] = useState(() => {
+-    try { const s = localStorage.getItem('os_remote_vector_config'); return s ? { ...defaultRemoteVectorConfig, ...JSON.parse(s) } : defaultRemoteVectorConfig; } catch { return defaultRemoteVectorConfig; }
++    try {
++      const s = localStorage.getItem('os_remote_vector_config');
++      const saved = s ? { ...defaultRemoteVectorConfig, ...JSON.parse(s) } : defaultRemoteVectorConfig;
++      return resolveAuthoritativeConfig(saved) || saved;
++    } catch { return defaultRemoteVectorConfig; }
+   });
+   const [customThemes, setCustomThemes] = useState<ChatTheme[]>([]);
+   const [customIcons, setCustomIcons] = useState<Record<string, string>>({});
+@@ -1603,7 +1620,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
+         try {
+             const rvConfig = JSON.parse(localStorage.getItem('os_remote_vector_config') || '{}');
+             if (rvConfig.enabled && rvConfig.initialized && rvConfig.supabaseUrl) {
+-                const { getVectorCount } = await import('../utils/memoryPalace/supabaseVector');
++                const { getVectorCount } = await import('../utils/memoryPalace/remoteVector');
+                 const remoteCount = await getVectorCount(rvConfig);
+                 // 本地向量数量
+                 const localDb = await import('../utils/db').then(m => m.openDB());
+@@ -2838,7 +2855,8 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
+     });
+   };
+   const updateRemoteVectorConfig = (updates: Partial<typeof defaultRemoteVectorConfig>) => {
+-    const newConfig = { ...remoteVectorConfig, ...updates };
++    const requestedConfig = { ...remoteVectorConfig, ...updates };
++    const newConfig = resolveAuthoritativeConfig(requestedConfig) || requestedConfig;
+     setRemoteVectorConfig(newConfig);
+     localStorage.setItem('os_remote_vector_config', JSON.stringify(newConfig));
+   };
+@@ -3641,6 +3659,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
+                   }
+                   return Object.keys(hwm).length > 0 ? hwm : undefined;
+               })() : undefined,
++              rollingCycleStates: (mode === 'text_only' || mode === 'full') ? exportRollingCycleStates() : undefined,
+ 
+               // Memory Palace 每角色的 UI 标记（人格检测已跑过、首次归档 banner 已看过等）
+               // 丢了会导致重弹一次人格确认 / 首次 banner，体验噪声但不丢数据，仍然应该备份
+@@ -4462,6 +4481,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
+                   }
+               }
+           }
++          if (data.rollingCycleStates) restoreRollingCycleStates(data.rollingCycleStates);
+ 
+           // Restore Memory Palace UI flags（人格检测已跑过 / 首次 banner 已见等）
+           if (data.memoryPalaceFlags && typeof data.memoryPalaceFlags === 'object') {
+diff --git a/types.ts b/types.ts
+index 6fe4f38..a85078e 100644
+--- a/types.ts
++++ b/types.ts
+@@ -3365,6 +3365,7 @@ export interface FullBackupData {
+     availableModels?: string[];
+     realtimeConfig?: RealtimeConfig;  // 实时感知配置（天气/新闻/Notion）
+     memoryPalaceConfig?: MemoryPalaceBackupConfig;
++    rollingCycleStates?: Record<string, string>;
+     customIcons?: Record<string, string>;
+     appearancePresets?: AppearancePreset[];
+     characters?: CharacterProfile[];
+diff --git a/utils/chatRequestPayload.ts b/utils/chatRequestPayload.ts
+index 9cccefa..1b28df7 100644
+--- a/utils/chatRequestPayload.ts
++++ b/utils/chatRequestPayload.ts
+@@ -14,7 +14,7 @@
+ 
+ import type { CharacterProfile, UserProfile, GroupProfile, Emoji, EmojiCategory, Message, RealtimeConfig, TranslationConfig } from '../types';
+ import { ChatPrompts } from './chatPrompts';
+-import { injectMemoryPalace } from './memoryPalace/pipeline';
++import { buildAcceptedSelfNarrativeInjection, injectMemoryPalace } from './memoryPalace/pipeline';
+ import { buildHtmlPrompt } from './htmlPrompt';
+ import { buildThinkingChainPrompt } from './thinkingChainPrompt';
+ import { buildMcdMiniAppContextBlock } from './mcdToolBridge';
+@@ -225,6 +225,14 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
+ 
+     // ── 1. Memory Palace 向量召回 ─────────────────────────
+     await injectMemoryPalace(char, recentMsgsHint, input.recallQueryHint, userProfile?.name);
++    const acceptedSelfNarrativeInjection = char.memoryPalaceEnabled
++        ? await buildAcceptedSelfNarrativeInjection(
++            char,
++            recentMsgsHint,
++            input.recallQueryHint,
++            userProfile?.name,
++        )
++        : '';
+ 
+     // ── 2. 解析音乐共听（如果 caller 没显式给，就从 snapshot 推） ──
+     let userListeningContext = input.userListeningContext;
+@@ -256,6 +264,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
+     );
+     let systemPrompt = parts.stable;
+     let volatileTail = parts.volatileState;
++    volatileTail += acceptedSelfNarrativeInjection;
+ 
+     // ── 4. 双语指令注入 ───────────────────────────────────
+     const sourceLang = normalizeTranslationLangLabel(translationConfig?.sourceLang);
+diff --git a/utils/memoryPalace/authoritativeCache.test.ts b/utils/memoryPalace/authoritativeCache.test.ts
+new file mode 100644
+index 0000000..aea4e2d
+--- /dev/null
++++ b/utils/memoryPalace/authoritativeCache.test.ts
+@@ -0,0 +1,101 @@
++import { beforeEach, describe, expect, it, vi } from 'vitest';
++import type { MemoryNode, RemoteVectorConfig } from './types';
++
++const mocks = vi.hoisted(() => ({
++    fetchRemotePage: vi.fn(),
++    getByCharId: vi.fn(),
++    saveManyLocal: vi.fn(),
++    deleteLocal: vi.fn(),
++}));
++
++vi.mock('./authority', () => ({
++    isOmbreAuthoritative: () => true,
++}));
++
++vi.mock('./remoteVector', () => ({
++    fetchRemotePage: mocks.fetchRemotePage,
++}));
++
++vi.mock('./db', () => ({
++    MemoryNodeDB: {
++        getByCharId: mocks.getByCharId,
++        saveManyLocal: mocks.saveManyLocal,
++        deleteLocal: mocks.deleteLocal,
++    },
++}));
++
++import { refreshSelfNarrativeCandidateCache } from './authoritativeCache';
++
++const config: RemoteVectorConfig = {
++    enabled: true,
++    initialized: true,
++    provider: 'ombre',
++    supabaseUrl: '',
++    supabaseAnonKey: '',
++    ombreUrl: '/sully-memory',
++};
++
++function node(id: string, tags: string[], archived = true): MemoryNode {
++    return {
++        id,
++        charId: 'yanke',
++        content: id,
++        room: 'self_room',
++        tags,
++        importance: 5,
++        mood: 'neutral',
++        embedded: false,
++        archived,
++        createdAt: 1,
++        lastAccessedAt: 1,
++        accessCount: 0,
++    };
++}
++
++describe('self narrative authoritative cache', () => {
++    beforeEach(() => {
++        vi.clearAllMocks();
++        mocks.saveManyLocal.mockResolvedValue(undefined);
++        mocks.deleteLocal.mockResolvedValue(undefined);
++    });
++
++    it('mirrors only management candidates while rolling mode remains enabled', async () => {
++        const candidate = node('candidate', ['第一人称自述', '自述候选']);
++        const accepted = node('accepted', ['第一人称自述', '自述已采纳']);
++        const misjudged = node('misjudged', ['第一人称自述', '自述误判']);
++        const ordinaryRemote = node('ordinary-remote', ['自我认知'], false);
++        const staleCandidate = node('stale', ['第一人称自述', '自述候选']);
++        const staleAccepted = node('stale-accepted', ['第一人称自述', '自述已采纳']);
++        const staleMisjudged = node('stale-misjudged', ['第一人称自述', '自述误判']);
++        const ordinaryLocal = node('ordinary-local', ['人格风格'], false);
++
++        mocks.fetchRemotePage.mockResolvedValue({
++            memories: [candidate, accepted, misjudged, ordinaryRemote],
++            total: 4,
++            offset: 0,
++            limit: 100,
++        });
++        mocks.getByCharId.mockResolvedValue([staleCandidate, staleAccepted, staleMisjudged, ordinaryLocal]);
++
++        await expect(refreshSelfNarrativeCandidateCache('yanke', config)).resolves.toEqual([
++            candidate,
++            accepted,
++            misjudged,
++        ]);
++        expect(mocks.fetchRemotePage).toHaveBeenCalledWith(config, 'yanke', 0, 100, 'self_room');
++        expect(mocks.saveManyLocal).toHaveBeenCalledWith([candidate, accepted, misjudged]);
++        expect(mocks.deleteLocal).toHaveBeenCalledWith('stale');
++        expect(mocks.deleteLocal).toHaveBeenCalledWith('stale-accepted');
++        expect(mocks.deleteLocal).toHaveBeenCalledWith('stale-misjudged');
++        expect(mocks.deleteLocal).not.toHaveBeenCalledWith('ordinary-local');
++    });
++
++    it('does not clear the offline cache when the remote request fails', async () => {
++        mocks.fetchRemotePage.mockRejectedValue(new Error('offline'));
++        mocks.getByCharId.mockResolvedValue([node('cached', ['第一人称自述', '自述候选'])]);
++
++        await expect(refreshSelfNarrativeCandidateCache('yanke', config, true)).rejects.toThrow('offline');
++        expect(mocks.saveManyLocal).not.toHaveBeenCalled();
++        expect(mocks.deleteLocal).not.toHaveBeenCalled();
++    });
++});
+diff --git a/utils/memoryPalace/authoritativeCache.ts b/utils/memoryPalace/authoritativeCache.ts
+new file mode 100644
+index 0000000..76c7983
+--- /dev/null
++++ b/utils/memoryPalace/authoritativeCache.ts
+@@ -0,0 +1,106 @@
++import type { MemoryNode, RemoteVectorConfig } from './types';
++import { isOmbreAuthoritative } from './authority';
++import { MemoryNodeDB } from './db';
++import { fetchRemotePage } from './remoteVector';
++import { isRollingCycleEnabled } from './rollingCycle';
++import { isSelfNarrativeRecord } from './selfNarrative';
++
++const lastRefresh = new Map<string, number>();
++const inFlight = new Map<string, Promise<MemoryNode[]>>();
++const selfNarrativeLastRefresh = new Map<string, number>();
++const selfNarrativeInFlight = new Map<string, Promise<MemoryNode[]>>();
++const REFRESH_INTERVAL_MS = 30_000;
++
++/**
++ * Rolling-cycle mode deliberately keeps Ombre as an archive instead of
++ * mirroring it into IndexedDB. Self-narrative candidates are the exception:
++ * they are management-only records and must remain visible across devices,
++ * while their archived flag still keeps them out of recall and embedding.
++ */
++export async function refreshSelfNarrativeCandidateCache(
++    charId: string,
++    config?: RemoteVectorConfig,
++    force = false,
++): Promise<MemoryNode[]> {
++    if (!isOmbreAuthoritative(config)) {
++        return (await MemoryNodeDB.getByCharId(charId)).filter(isSelfNarrativeRecord);
++    }
++
++    const now = Date.now();
++    if (!force && now - (selfNarrativeLastRefresh.get(charId) || 0) < REFRESH_INTERVAL_MS) {
++        return (await MemoryNodeDB.getByCharId(charId)).filter(isSelfNarrativeRecord);
++    }
++    const running = selfNarrativeInFlight.get(charId);
++    if (running) return running;
++
++    const task = (async () => {
++        const remoteRoom: MemoryNode[] = [];
++        const pageSize = 100;
++        let offset = 0;
++        let total = Number.POSITIVE_INFINITY;
++        while (offset < total) {
++            const page = await fetchRemotePage(config!, charId, offset, pageSize, 'self_room');
++            remoteRoom.push(...(page.memories || []));
++            total = Number.isFinite(page.total) ? page.total : remoteRoom.length;
++            if (!page.memories?.length || remoteRoom.length >= total) break;
++            offset += page.memories.length;
++        }
++        const remoteCandidates = remoteRoom.filter(isSelfNarrativeRecord);
++        const remoteIds = new Set(remoteCandidates.map(node => node.id));
++        const localCandidates = (await MemoryNodeDB.getByCharId(charId)).filter(isSelfNarrativeRecord);
++
++        await MemoryNodeDB.saveManyLocal(remoteCandidates);
++        for (const node of localCandidates) {
++            if (!remoteIds.has(node.id)) await MemoryNodeDB.deleteLocal(node.id);
++        }
++        selfNarrativeLastRefresh.set(charId, Date.now());
++        return remoteCandidates;
++    })().finally(() => selfNarrativeInFlight.delete(charId));
++
++    selfNarrativeInFlight.set(charId, task);
++    return task;
++}
++
++/** Rebuild the local node cache from Ombre without writing the snapshot back. */
++export async function refreshAuthoritativeCache(
++    charId: string,
++    config?: RemoteVectorConfig,
++    force = false,
++): Promise<MemoryNode[]> {
++    // In rolling mode Ombre is an explicit archive target, not an automatic local mirror.
++    if (isRollingCycleEnabled()) return MemoryNodeDB.getByCharId(charId);
++    if (!isOmbreAuthoritative(config)) return MemoryNodeDB.getByCharId(charId);
++
++    const now = Date.now();
++    if (!force && now - (lastRefresh.get(charId) || 0) < REFRESH_INTERVAL_MS) {
++        return MemoryNodeDB.getByCharId(charId);
++    }
++    const running = inFlight.get(charId);
++    if (running) return running;
++
++    const task = (async () => {
++        const remote: MemoryNode[] = [];
++        const pageSize = 100;
++        let offset = 0;
++        let total = Number.POSITIVE_INFINITY;
++        while (offset < total) {
++            const page = await fetchRemotePage(config!, charId, offset, pageSize);
++            remote.push(...(page.memories || []));
++            total = Number.isFinite(page.total) ? page.total : remote.length;
++            if (!page.memories?.length || remote.length >= total) break;
++            offset += page.memories.length;
++        }
++
++        const local = await MemoryNodeDB.getByCharId(charId);
++        const remoteIds = new Set(remote.map(node => node.id));
++        await MemoryNodeDB.saveManyLocal(remote);
++        for (const node of local) {
++            if (!remoteIds.has(node.id)) await MemoryNodeDB.deleteLocal(node.id);
++        }
++        lastRefresh.set(charId, Date.now());
++        return remote;
++    })().finally(() => inFlight.delete(charId));
++
++    inFlight.set(charId, task);
++    return task;
++}
+diff --git a/utils/memoryPalace/authority.ts b/utils/memoryPalace/authority.ts
+new file mode 100644
+index 0000000..9dfb0f1
+--- /dev/null
++++ b/utils/memoryPalace/authority.ts
+@@ -0,0 +1,16 @@
++import type { RemoteVectorConfig } from './types';
++import { SULLY_MEMORY_URL } from '../deploymentUrls';
++
++export const OMBRE_AUTHORITATIVE_BUILD = import.meta.env.VITE_OMBRE_AUTHORITATIVE === '1';
++
++export function resolveAuthoritativeConfig(config?: RemoteVectorConfig | null): RemoteVectorConfig | null {
++    if (config?.enabled && config.initialized && config.provider === 'ombre') return config;
++    if (!OMBRE_AUTHORITATIVE_BUILD) return config || null;
++    return { enabled: true, provider: 'ombre', supabaseUrl: '', supabaseAnonKey: '', ombreUrl: SULLY_MEMORY_URL, ombreToken: '', initialized: true };
++}
++
++export function isOmbreAuthoritative(config?: RemoteVectorConfig | null): boolean {
++    if (!OMBRE_AUTHORITATIVE_BUILD) return false;
++    const resolved = resolveAuthoritativeConfig(config);
++    return !!(resolved?.enabled && resolved.initialized && resolved.provider === 'ombre');
++}
+diff --git a/utils/memoryPalace/consolidation.ts b/utils/memoryPalace/consolidation.ts
+index 28c3574..f95ad2e 100644
+--- a/utils/memoryPalace/consolidation.ts
++++ b/utils/memoryPalace/consolidation.ts
+@@ -10,7 +10,8 @@
+ import type { MemoryNode, MemoryRoom, RemoteVectorConfig } from './types';
+ import { ROOM_CONFIGS } from './types';
+ import { MemoryNodeDB } from './db';
+-import { bulkSetRoom } from './supabaseVector';
++import { bulkSetRoom } from './remoteVector';
++import { isRollingCycleEnabled } from './rollingCycle';
+ 
+ // ─── 艾宾浩斯衰减 ────────────────────────────────────
+ 
+@@ -157,7 +158,7 @@ export async function runConsolidation(
+     // 3. 远程同步（Supabase memory_vectors.room）
+     //    两类变更 → 两次 PATCH：promoted 全进 bedroom，evicted 全进 attic。
+     //    远端没有对应 memory_id 的 PATCH 自动 no-op，不会造成脏数据。
+-    if (remoteConfig?.enabled && remoteConfig.initialized && (result.promoted.length > 0 || result.evicted.length > 0)) {
++    if (!isRollingCycleEnabled() && remoteConfig?.enabled && remoteConfig.initialized && (result.promoted.length > 0 || result.evicted.length > 0)) {
+         try {
+             const tasks: Promise<boolean>[] = [];
+             if (result.promoted.length > 0) {
+diff --git a/utils/memoryPalace/db.ts b/utils/memoryPalace/db.ts
+index db45354..9e5734a 100644
+--- a/utils/memoryPalace/db.ts
++++ b/utils/memoryPalace/db.ts
+@@ -13,6 +13,13 @@ import type {
+ import { DIGEST_REPORT_KEEP } from './types';
+ import { bm25Index } from './bm25Index';
+ import type { VectorIndexEntry as VectorBackupIndexEntry } from '../backupFormat';
++import type { RemoteVectorConfig } from './types';
++import { isOmbreAuthoritative, resolveAuthoritativeConfig } from './authority';
++import {
++    ensureNodeInActiveRollingCycle,
++    isLocalCycleNode,
++    isRollingCycleEnabled,
++} from './rollingCycle';
+ 
+ // ─── Store 名称常量 ────────────────────────────────────
+ 
+@@ -90,36 +97,41 @@ async function getAll<T>(storeName: string): Promise<T[]> {
+ // ─── MemoryNode CRUD ──────────────────────────────────
+ 
+ /** 读取远程向量配置（轻量，仅 localStorage 读取） */
+-function getRemoteVectorConfig(): { enabled: boolean; supabaseUrl: string; supabaseAnonKey: string; initialized: boolean } | null {
++function getRemoteVectorConfig(): RemoteVectorConfig | null {
+     try {
+         const raw = localStorage.getItem('os_remote_vector_config');
+-        if (!raw) return null;
++        if (!raw) return resolveAuthoritativeConfig(null);
+         const c = JSON.parse(raw);
+-        return (c.enabled && c.initialized) ? c : null;
+-    } catch { return null; }
++        return resolveAuthoritativeConfig((c.enabled && c.initialized) ? c : null);
++    } catch { return resolveAuthoritativeConfig(null); }
+ }
+ 
+ /** save 后自动同步已向量化节点的 metadata 到远程 */
+-function syncNodeMetadataToRemote(node: MemoryNode): void {
+-    if (!node.embedded) return;
++async function syncNodeMetadataToRemote(node: MemoryNode): Promise<boolean> {
+     const rc = getRemoteVectorConfig();
+-    if (!rc) return;
+-    // 懒加载 + fire-and-forget
+-    import('./supabaseVector').then(({ upsertVector }) => {
+-        // 只更新 metadata（room/importance/tags/mood/content），需要拿到向量
+-        getByKey<MemoryVector>(STORE_MEMORY_VECTORS, node.id).then(vec => {
+-            if (!vec) return;
+-            // ensureFloat32 兼容旧 number[] / 新 Uint8Array / 内存中的 Float32Array
+-            // 三种形态，都解码成 Float32Array 喂给 supabase。
+-            const vector = ensureFloat32(vec.vector);
+-            upsertVector(rc, node.id, node.charId, vector, node, vec.dimensions, vec.model).catch(() => {});
+-        });
+-    }).catch(() => {});
++    if (!rc) return true;
++    if (!node.embedded && rc.provider !== 'ombre') return true;
++    try {
++        const { upsertVector } = await import('./remoteVector');
++        const vec = await getByKey<MemoryVector>(STORE_MEMORY_VECTORS, node.id);
++        if (!vec && rc.provider !== 'ombre') return true;
++        return await upsertVector(rc, node.id, node.charId, vec ? ensureFloat32(vec.vector) : new Float32Array(0), node, vec?.dimensions || 0, vec?.model);
++    } catch { return false; }
+ }
+-
+ export const MemoryNodeDB = {
+     save: async (node: MemoryNode) => {
++        ensureNodeInActiveRollingCycle(node);
++        const rc = getRemoteVectorConfig();
++        const localCycleNode = isRollingCycleEnabled() && isLocalCycleNode(node);
++        if (isOmbreAuthoritative(rc) && !localCycleNode && !await syncNodeMetadataToRemote(node)) {
++            throw new Error('Ombre did not confirm memory write; local cache unchanged');
++        }
+         await put<MemoryNode>(STORE_MEMORY_NODES, node);
++        // The active cycle may have changed while IndexedDB was opening.
++        // Re-home and persist once more so delayed extraction cannot strand a node.
++        if (ensureNodeInActiveRollingCycle(node)) {
++            await put<MemoryNode>(STORE_MEMORY_NODES, node);
++        }
+         // 写入验证：确认数据真的持久化了
+         const verify = await getByKey<MemoryNode>(STORE_MEMORY_NODES, node.id);
+         if (!verify) {
+@@ -129,16 +141,30 @@ export const MemoryNodeDB = {
+         // BM25 倒排索引：内部按 contentSig 判断是否需要重新 tokenize，
+         // touchAccess 之类只改 metadata 的写入会被自动跳过。
+         bm25Index.onNodeSaved(node);
+-        syncNodeMetadataToRemote(node);
++        if (!isOmbreAuthoritative(rc) && !localCycleNode) void syncNodeMetadataToRemote(node);
+     },
+ 
+     getById: (id: string) => getByKey<MemoryNode>(STORE_MEMORY_NODES, id),
+ 
+     delete: async (id: string) => {
++        await MemoryNodeDB.confirmAuthoritativeDelete(id);
++        await MemoryNodeDB.deleteLocal(id);
++    },
++
++    /** Confirm an Ombre delete without changing the rebuildable local cache. */
++    confirmAuthoritativeDelete: async (id: string) => {
++        const rc = getRemoteVectorConfig();
++        if (isOmbreAuthoritative(rc)) {
++            const { deleteVector } = await import('./remoteVector');
++            if (!await deleteVector(rc!, id)) throw new Error('Ombre did not confirm memory delete; local cache unchanged');
++        }
++    },
++
++    /** Update the rebuildable IndexedDB cache without writing back to Ombre. */
++    deleteLocal: async (id: string) => {
+         await deleteByKey(STORE_MEMORY_NODES, id);
+         bm25Index.onNodeDeleted(id);
+     },
+-
+     getByCharId: (charId: string) =>
+         getAllByIndex<MemoryNode>(STORE_MEMORY_NODES, 'charId', charId),
+ 
+@@ -160,6 +186,15 @@ export const MemoryNodeDB = {
+ 
+     /** 批量保存 */
+     saveMany: async (nodes: MemoryNode[]): Promise<void> => {
++        if (isOmbreAuthoritative(getRemoteVectorConfig())) {
++            for (const node of nodes) await MemoryNodeDB.save(node);
++            return;
++        }
++        await MemoryNodeDB.saveManyLocal(nodes);
++    },
++
++    /** Update the rebuildable IndexedDB cache without writing back to Ombre. */
++    saveManyLocal: async (nodes: MemoryNode[]): Promise<void> => {
+         const db = await openDB();
+         await new Promise<void>((resolve, reject) => {
+             const tx = db.transaction(STORE_MEMORY_NODES, 'readwrite');
+@@ -180,7 +215,8 @@ export const MemoryNodeDB = {
+         node.lastAccessedAt = Date.now();
+         node.accessCount += 1;
+         await put<MemoryNode>(STORE_MEMORY_NODES, node);
+-        syncNodeMetadataToRemote(node);
++        bm25Index.onNodeSaved(node);
++        if (!isOmbreAuthoritative(getRemoteVectorConfig())) void syncNodeMetadataToRemote(node);
+     },
+ };
+ 
+diff --git a/utils/memoryPalace/deleteMemory.test.ts b/utils/memoryPalace/deleteMemory.test.ts
+new file mode 100644
+index 0000000..7006171
+--- /dev/null
++++ b/utils/memoryPalace/deleteMemory.test.ts
+@@ -0,0 +1,115 @@
++import { beforeEach, describe, expect, it, vi } from 'vitest';
++import type { RemoteVectorConfig } from './types';
++
++const mocks = vi.hoisted(() => ({
++    confirmAuthoritativeDelete: vi.fn(),
++    deleteLocal: vi.fn(),
++    deleteNode: vi.fn(),
++    getByNodeId: vi.fn(),
++    deleteLink: vi.fn(),
++    deleteVectorLocal: vi.fn(),
++    removeMemoryFromBox: vi.fn(),
++    deleteVectorRemote: vi.fn(),
++}));
++
++vi.mock('./authority', () => ({
++    isOmbreAuthoritative: (config: RemoteVectorConfig | null | undefined) =>
++        config?.provider === 'ombre',
++}));
++
++vi.mock('./db', () => ({
++    MemoryNodeDB: {
++        confirmAuthoritativeDelete: mocks.confirmAuthoritativeDelete,
++        deleteLocal: mocks.deleteLocal,
++        delete: mocks.deleteNode,
++    },
++    MemoryLinkDB: {
++        getByNodeId: mocks.getByNodeId,
++        delete: mocks.deleteLink,
++    },
++    MemoryVectorDB: {
++        delete: mocks.deleteVectorLocal,
++    },
++}));
++
++vi.mock('./eventBox', () => ({
++    removeMemoryFromBox: mocks.removeMemoryFromBox,
++}));
++
++vi.mock('./remoteVector', () => ({
++    deleteVector: mocks.deleteVectorRemote,
++}));
++
++import { deleteMemoryCompletely } from './deleteMemory';
++
++const ombreConfig: RemoteVectorConfig = {
++    enabled: true,
++    initialized: true,
++    provider: 'ombre',
++    supabaseUrl: '',
++    supabaseAnonKey: '',
++    ombreUrl: '/sully-memory',
++};
++
++const supabaseConfig: RemoteVectorConfig = {
++    enabled: true,
++    initialized: true,
++    provider: 'supabase',
++    supabaseUrl: 'https://example.supabase.co',
++    supabaseAnonKey: 'public-test-key',
++};
++
++describe('authoritative memory deletion', () => {
++    beforeEach(() => {
++        vi.clearAllMocks();
++        mocks.confirmAuthoritativeDelete.mockResolvedValue(undefined);
++        mocks.removeMemoryFromBox.mockResolvedValue(undefined);
++        mocks.getByNodeId.mockResolvedValue([{ id: 'link-a' }, { id: 'link-b' }]);
++        mocks.deleteLink.mockResolvedValue(undefined);
++        mocks.deleteVectorLocal.mockResolvedValue(undefined);
++        mocks.deleteLocal.mockResolvedValue(undefined);
++    });
++
++    it('keeps every local record unchanged when Ombre rejects the delete', async () => {
++        mocks.confirmAuthoritativeDelete.mockRejectedValue(new Error('offline'));
++
++        await expect(deleteMemoryCompletely('memory-1', ombreConfig))
++            .rejects.toThrow('offline');
++
++        expect(mocks.removeMemoryFromBox).not.toHaveBeenCalled();
++        expect(mocks.getByNodeId).not.toHaveBeenCalled();
++        expect(mocks.deleteLink).not.toHaveBeenCalled();
++        expect(mocks.deleteVectorLocal).not.toHaveBeenCalled();
++        expect(mocks.deleteLocal).not.toHaveBeenCalled();
++        expect(mocks.deleteNode).not.toHaveBeenCalled();
++    });
++
++    it('cleans EventBox, links, vector and node locally after confirmation', async () => {
++        await expect(deleteMemoryCompletely('memory-1', ombreConfig))
++            .resolves.toBeUndefined();
++
++        expect(mocks.confirmAuthoritativeDelete).toHaveBeenCalledWith('memory-1');
++        expect(mocks.removeMemoryFromBox).toHaveBeenCalledWith('memory-1', true);
++        expect(mocks.deleteLink).toHaveBeenNthCalledWith(1, 'link-a');
++        expect(mocks.deleteLink).toHaveBeenNthCalledWith(2, 'link-b');
++        expect(mocks.deleteVectorLocal).toHaveBeenCalledWith('memory-1');
++        expect(mocks.deleteLocal).toHaveBeenCalledWith('memory-1');
++        expect(mocks.deleteNode).not.toHaveBeenCalled();
++        expect(mocks.deleteVectorRemote).not.toHaveBeenCalled();
++    });
++
++    it('does not upsert an EventBox state before a Supabase delete', async () => {
++        mocks.deleteNode.mockResolvedValue(undefined);
++        mocks.deleteVectorRemote.mockResolvedValue(true);
++
++        await expect(deleteMemoryCompletely('memory-1', supabaseConfig))
++            .resolves.toBeUndefined();
++
++        expect(mocks.confirmAuthoritativeDelete).not.toHaveBeenCalled();
++        expect(mocks.removeMemoryFromBox).toHaveBeenCalledWith('memory-1', true);
++        expect(mocks.deleteVectorRemote).toHaveBeenCalledTimes(1);
++        expect(mocks.deleteVectorRemote).toHaveBeenCalledWith(supabaseConfig, 'memory-1');
++        expect(mocks.deleteNode).toHaveBeenCalledWith('memory-1');
++        expect(mocks.deleteLocal).not.toHaveBeenCalled();
++    });
++});
+diff --git a/utils/memoryPalace/deleteMemory.ts b/utils/memoryPalace/deleteMemory.ts
+new file mode 100644
+index 0000000..fb8553e
+--- /dev/null
++++ b/utils/memoryPalace/deleteMemory.ts
+@@ -0,0 +1,43 @@
++import type { RemoteVectorConfig } from './types';
++import { MemoryLinkDB, MemoryNodeDB, MemoryVectorDB } from './db';
++import { removeMemoryFromBox } from './eventBox';
++import { isOmbreAuthoritative } from './authority';
++import { deleteVector } from './remoteVector';
++
++/**
++ * Delete one memory and all rebuildable local references.
++ *
++ * In authoritative mode the remote delete is the commit point: no local state
++ * is touched unless Ombre confirms it first. EventBox cleanup is explicitly
++ * local-only so it cannot re-upsert the node that Ombre just deleted.
++ */
++export async function deleteMemoryCompletely(
++    nodeId: string,
++    remoteVectorConfig?: RemoteVectorConfig | null,
++): Promise<void> {
++    const authoritative = isOmbreAuthoritative(remoteVectorConfig);
++    if (authoritative) {
++        await MemoryNodeDB.confirmAuthoritativeDelete(nodeId);
++    }
++
++    // The node is about to be deleted. Syncing this transient unbound state
++    // would race the remote DELETE and could resurrect the record.
++    await removeMemoryFromBox(nodeId, true);
++
++    const links = await MemoryLinkDB.getByNodeId(nodeId);
++    for (const link of links) {
++        await MemoryLinkDB.delete(link.id);
++    }
++    await MemoryVectorDB.delete(nodeId);
++
++    if (
++        remoteVectorConfig?.enabled
++        && remoteVectorConfig.initialized
++        && remoteVectorConfig.provider !== 'ombre'
++    ) {
++        void deleteVector(remoteVectorConfig, nodeId).catch(() => {});
++    }
++
++    if (authoritative) await MemoryNodeDB.deleteLocal(nodeId);
++    else await MemoryNodeDB.delete(nodeId);
++}
+diff --git a/utils/memoryPalace/digestion.ts b/utils/memoryPalace/digestion.ts
+index f00413e..b21c9c1 100644
+--- a/utils/memoryPalace/digestion.ts
++++ b/utils/memoryPalace/digestion.ts
+@@ -32,6 +32,7 @@ import { fulfillAnticipation, disappointAnticipation, createAnticipation } from
+ import { vectorizeAndStore } from './vectorStore';
+ import { safeFetchJson } from '../safeApi';
+ import { safeParseJsonArray } from './jsonUtils';
++import { createSelfNarrativeCandidate } from './selfNarrative';
+ 
+ /** 从 localStorage 读取远程向量配置（与 pipeline.ts 同一份来源） */
+ function getRemoteVectorConfig(): RemoteVectorConfig | undefined {
+@@ -601,15 +602,18 @@ async function executeActions(
+                 }
+ 
+                 case 'self_insight': {
+-                    // 自我领悟：弹窗昭告的时刻保留（result.selfInsights 仍驱动 UI），
+-                    // 但归宿从 char.selfInsights（只进不出的追加列表）换成「我是谁」门牌——
+-                    // 时刻是体验，存储是架构。
++                    // 自我领悟保留在结果弹窗中，同时另存为隔离的候选记录。
++                    // 候选默认归档且不参与向量召回；只有用户确认整合出的稳定认知
++                    // 才可能通过独立相关性筛选进入聊天上下文。
+                     const node = material.selfRoomNodes.find(n => n.id === action.id);
+                     if (node && action.insight) {
++                        const narrative = createSelfNarrativeCandidate(charId, node, action.insight);
++                        await MemoryNodeDB.save(narrative);
+                         node.digestedAt = Date.now();
+                         await MemoryNodeDB.save(node);
+                         result.selfInsights.push(action.insight);
+                         submitToPlate('self_room', action.insight);
++                        existingNodes.push(narrative);
+                         console.log(`💡 [Digest] Self insight → 门牌候选(self_room): "${action.insight.slice(0, 40)}..."`);
+                     }
+                     break;
+diff --git a/utils/memoryPalace/eventBox.localOnly.test.ts b/utils/memoryPalace/eventBox.localOnly.test.ts
+new file mode 100644
+index 0000000..b345b33
+--- /dev/null
++++ b/utils/memoryPalace/eventBox.localOnly.test.ts
+@@ -0,0 +1,65 @@
++import { beforeEach, describe, expect, it, vi } from 'vitest';
++
++const mocks = vi.hoisted(() => ({
++    getNode: vi.fn(),
++    saveNode: vi.fn(),
++    saveManyLocal: vi.fn(),
++    getBox: vi.fn(),
++    saveBox: vi.fn(),
++    deleteBox: vi.fn(),
++}));
++
++vi.mock('./db', () => ({
++    MemoryNodeDB: {
++        getById: mocks.getNode,
++        save: mocks.saveNode,
++        saveManyLocal: mocks.saveManyLocal,
++    },
++    EventBoxDB: {
++        getById: mocks.getBox,
++        save: mocks.saveBox,
++        delete: mocks.deleteBox,
++    },
++}));
++
++import { removeMemoryFromBox } from './eventBox';
++
++describe('EventBox local-only removal', () => {
++    beforeEach(() => {
++        vi.clearAllMocks();
++        mocks.getNode.mockResolvedValue({
++            id: 'memory-1',
++            eventBoxId: 'box-1',
++            archived: true,
++            isBoxSummary: false,
++        });
++        mocks.getBox.mockResolvedValue({
++            id: 'box-1',
++            liveMemoryIds: [],
++            archivedMemoryIds: ['memory-1', 'memory-2'],
++            summaryNodeId: null,
++            updatedAt: 1,
++        });
++        mocks.saveManyLocal.mockResolvedValue(undefined);
++        mocks.saveBox.mockResolvedValue(undefined);
++    });
++
++    it('updates only the local node cache and never calls the remote-syncing save', async () => {
++        await removeMemoryFromBox('memory-1', true);
++
++        expect(mocks.saveManyLocal).toHaveBeenCalledTimes(1);
++        expect(mocks.saveManyLocal).toHaveBeenCalledWith([
++            expect.objectContaining({
++                id: 'memory-1',
++                eventBoxId: null,
++                archived: false,
++                isBoxSummary: false,
++            }),
++        ]);
++        expect(mocks.saveNode).not.toHaveBeenCalled();
++        expect(mocks.saveBox).toHaveBeenCalledWith(
++            expect.objectContaining({ archivedMemoryIds: ['memory-2'] }),
++        );
++        expect(mocks.deleteBox).not.toHaveBeenCalled();
++    });
++});
+diff --git a/utils/memoryPalace/eventBox.ts b/utils/memoryPalace/eventBox.ts
+index 836511b..9776a27 100644
+--- a/utils/memoryPalace/eventBox.ts
++++ b/utils/memoryPalace/eventBox.ts
+@@ -265,13 +265,14 @@ export async function manuallyBindMemories(
+  * 把一条记忆从某 EventBox 中移出（恢复为独立记忆）。
+  * 用于 UI 的"解除关联"或"复活归档项"场景。
+  */
+-export async function removeMemoryFromBox(memoryId: string): Promise<void> {
++export async function removeMemoryFromBox(memoryId: string, localOnly = false): Promise<void> {
+     const node = await MemoryNodeDB.getById(memoryId);
+     if (!node || !node.eventBoxId) return;
+     const box = await EventBoxDB.getById(node.eventBoxId);
+     if (!box) {
+         node.eventBoxId = null;
+-        await MemoryNodeDB.save(node);
++        if (localOnly) await MemoryNodeDB.saveManyLocal([node]);
++        else await MemoryNodeDB.save(node);
+         return;
+     }
+     box.liveMemoryIds = box.liveMemoryIds.filter(id => id !== memoryId);
+@@ -281,7 +282,8 @@ export async function removeMemoryFromBox(memoryId: string): Promise<void> {
+     node.eventBoxId = null;
+     node.archived = false;
+     node.isBoxSummary = false;
+-    await MemoryNodeDB.save(node);
++    if (localOnly) await MemoryNodeDB.saveManyLocal([node]);
++    else await MemoryNodeDB.save(node);
+ 
+     // 空盒清理
+     const empty = box.liveMemoryIds.length === 0
+diff --git a/utils/memoryPalace/eventBoxCompression.rollingCycle.test.ts b/utils/memoryPalace/eventBoxCompression.rollingCycle.test.ts
+new file mode 100644
+index 0000000..f5843db
+--- /dev/null
++++ b/utils/memoryPalace/eventBoxCompression.rollingCycle.test.ts
+@@ -0,0 +1,124 @@
++import { beforeEach, describe, expect, it, vi } from 'vitest';
++import type { EventBox, MemoryNode, RemoteVectorConfig } from './types';
++
++const mocks = vi.hoisted(() => ({
++    getNode: vi.fn(),
++    saveNode: vi.fn(),
++    getBox: vi.fn(),
++    saveBox: vi.fn(),
++    vectorize: vi.fn(),
++    bulkArchived: vi.fn(),
++    safeFetchJson: vi.fn(),
++}));
++
++vi.mock('./db', () => ({
++    MemoryNodeDB: { getById: mocks.getNode, save: mocks.saveNode },
++    EventBoxDB: { getById: mocks.getBox, save: mocks.saveBox },
++}));
++vi.mock('./vectorStore', () => ({ vectorizeAndStore: mocks.vectorize }));
++vi.mock('./remoteVector', () => ({ bulkSetArchived: mocks.bulkArchived }));
++vi.mock('../safeApi', () => ({
++    safeFetchJson: mocks.safeFetchJson,
++    extractJson: (value: string) => JSON.parse(value),
++}));
++vi.mock('./roomPlates', () => ({
++    isPlateRoom: () => false,
++    updatePlateFromBoxSummary: vi.fn(),
++}));
++
++import { maybeCompressEventBoxes } from './eventBoxCompression';
++import { ensureRollingCycleState } from './rollingCycle';
++import { selectRollingCycleCandidates } from './rollingCycleArchive';
++
++const makeNode = (id: string, cycleId: string): MemoryNode => ({
++    id,
++    charId: 'yanke',
++    content: `memory ${id}`,
++    room: 'study',
++    tags: [],
++    importance: 5,
++    mood: 'neutral',
++    embedded: true,
++    createdAt: Number(id.slice(1)),
++    lastAccessedAt: 1,
++    accessCount: 0,
++    origin: 'extraction',
++    localCycleId: cycleId,
++    archivedToOmbreAt: null,
++});
++
++describe('EventBox compression during a rolling cycle', () => {
++    beforeEach(() => {
++        vi.clearAllMocks();
++        vi.stubEnv('VITE_MEMORY_ROLLING_CYCLES', '1');
++        localStorage.clear();
++    });
++
++    it('keeps the replacement summary local and never archives remotely', async () => {
++        const state = ensureRollingCycleState('yanke', 0, 1_000);
++        const nodes = ['n1', 'n2', 'n3', 'n4'].map(id => makeNode(id, state.active.id));
++        const byId = new Map(nodes.map(item => [item.id, item]));
++        const box: EventBox = {
++            id: 'box',
++            charId: 'yanke',
++            name: 'box',
++            tags: [],
++            summaryNodeId: null,
++            liveMemoryIds: nodes.map(item => item.id),
++            archivedMemoryIds: [],
++            compressionCount: 0,
++            createdAt: 1,
++            updatedAt: 1,
++            lastCompressedAt: null,
++        };
++        mocks.getBox.mockResolvedValue(box);
++        mocks.getNode.mockImplementation((id: string) => Promise.resolve(byId.get(id)));
++        mocks.safeFetchJson.mockResolvedValue({
++            choices: [{ message: { content: JSON.stringify({
++                content: '我记得这四件事。',
++                name: 'summary',
++                tags: ['memory'],
++                room: 'study',
++                importance: 7,
++                mood: 'neutral',
++            }) } }],
++        });
++        localStorage.setItem('os_remote_vector_config', JSON.stringify({
++            enabled: true,
++            initialized: true,
++            provider: 'ombre',
++            supabaseUrl: '',
++            supabaseAnonKey: '',
++        } satisfies RemoteVectorConfig));
++
++        await expect(maybeCompressEventBoxes(
++            [box.id],
++            { baseUrl: 'https://llm.invalid', apiKey: 'x', model: 'm' },
++            { baseUrl: 'https://embedding.invalid', apiKey: 'x', model: 'e', dimensions: 3 },
++            '顾砚',
++        )).resolves.toEqual({ compressed: 1, skipped: 0 });
++
++        const summary = mocks.saveNode.mock.calls
++            .map(([saved]) => saved as MemoryNode)
++            .find(saved => saved.isBoxSummary);
++        expect(summary).toMatchObject({
++            isBoxSummary: true,
++            localCycleId: state.active.id,
++            archivedToOmbreAt: null,
++        });
++        expect(mocks.vectorize).toHaveBeenCalledWith(
++            [expect.objectContaining({ localCycleId: state.active.id })],
++            expect.anything(),
++            expect.anything(),
++            { skipDedup: true },
++        );
++        expect(mocks.bulkArchived).not.toHaveBeenCalled();
++
++        const candidates = selectRollingCycleCandidates(
++            [...nodes, summary!],
++            [box],
++            state.active.id,
++        );
++        expect(candidates.candidates.map(item => item.id)).toEqual([summary!.id]);
++    });
++});
+diff --git a/utils/memoryPalace/eventBoxCompression.ts b/utils/memoryPalace/eventBoxCompression.ts
+index 4739786..522c534 100644
+--- a/utils/memoryPalace/eventBoxCompression.ts
++++ b/utils/memoryPalace/eventBoxCompression.ts
+@@ -26,9 +26,10 @@ import {
+ import { EventBoxDB, MemoryNodeDB } from './db';
+ import type { LightLLMConfig } from './pipeline';
+ import { vectorizeAndStore } from './vectorStore';
+-import { bulkSetArchived } from './supabaseVector';
++import { bulkSetArchived } from './remoteVector';
+ import { safeFetchJson, extractJson } from '../safeApi';
+ import { enforceSummaryLengthBudget } from './summaryLengthBudget';
++import { isLocalCycleNode, isRollingCycleEnabled } from './rollingCycle';
+ 
+ const VALID_ROOMS: MemoryRoom[] = [
+     'living_room', 'bedroom', 'study', 'user_room',
+@@ -323,6 +324,11 @@ async function compressEventBox(
+         return false;
+     }
+ 
++    // A summary replaces local cycle members and must stay local until commit.
++    const localCycleId = isRollingCycleEnabled()
++        ? liveNodes.find(node => isLocalCycleNode(node))?.localCycleId
++        : undefined;
++
+     // 4. 创建或更新 summary 节点
+     const now = Date.now();
+     let summaryNode: MemoryNode;
+@@ -350,6 +356,10 @@ async function compressEventBox(
+         summaryNode = createSummaryNode(box, result, now);
+         box.summaryNodeId = summaryNode.id;
+     }
++    if (localCycleId) {
++        summaryNode.localCycleId = localCycleId;
++        summaryNode.archivedToOmbreAt = null;
++    }
+     await MemoryNodeDB.save(summaryNode);
+ 
+     // 5. 向量化 summary（跳过去重，因为内容必然和 live 节点重叠）
+@@ -370,7 +380,7 @@ async function compressEventBox(
+         }
+     }
+     // 远程批量加速（与上面 per-node sync 重复但幂等）
+-    if (remoteCfg) {
++    if (remoteCfg && !localCycleId) {
+         await bulkSetArchived(remoteCfg, liveIds, true).catch(() => {});
+     }
+ 
+diff --git a/utils/memoryPalace/formatter.ts b/utils/memoryPalace/formatter.ts
+index 4a15eb9..a5682a4 100644
+--- a/utils/memoryPalace/formatter.ts
++++ b/utils/memoryPalace/formatter.ts
+@@ -17,6 +17,12 @@ import { ROOM_CONFIGS, getRoomLabel } from './types';
+ import { MemoryNodeDB, EventBoxDB } from './db';
+ import { recordRecallReceipt } from './recallReceipts';
+ import { formatMemoryDateWithDistance } from './memoryDate';
++import {
++    isRecallableLocalCycleNode,
++    isRollingCycleEnabled,
++    readRollingCycleState,
++    type RollingCycleState,
++} from './rollingCycle';
+ 
+ const DEFAULT_MAX_OUTPUT_ITEMS = 15;
+ const MAX_LIVE_NODES_PER_BOX = 8; // 单盒最多展开多少条活节点（防止超大盒污染）
+@@ -55,11 +61,14 @@ export async function expandAndFormat(
+     /** 注入上限。rerank 启用时传 15 + topN，让 rerank 额外召回的不被切。 */
+     maxOutputItems: number = DEFAULT_MAX_OUTPUT_ITEMS,
+ ): Promise<string> {
+-    const MAX_OUTPUT_ITEMS = maxOutputItems;
++    const rollingEnabled = isRollingCycleEnabled();
++    const rollingState = rollingEnabled ? readRollingCycleState(charId) : null;
++    const MAX_OUTPUT_ITEMS = rollingEnabled ? Math.min(maxOutputItems, 5) : maxOutputItems;
+     // 0. 加载便利贴置顶记忆（pinnedUntil > now，不占 15 条名额）
+     const now = Date.now();
+     const allCharNodes = await MemoryNodeDB.getByCharId(charId);
+-    const pinnedNodes = allCharNodes.filter(n => n.pinnedUntil && n.pinnedUntil > now && !n.archived);
++    const pinnedNodes = allCharNodes.filter(n => n.pinnedUntil && n.pinnedUntil > now && !n.archived
++        && (!rollingEnabled || isRecallableLocalCycleNode(n, rollingState)));
+     const pinnedIds = new Set(pinnedNodes.map(n => n.id));
+ 
+     if (results.length === 0 && anticipations.length === 0 && pinnedNodes.length === 0) return '';
+@@ -93,7 +102,9 @@ export async function expandAndFormat(
+ 
+     // 2. 加载所有 box 的完整内容
+     const renderItems: RenderItem[] = [];
+-    const localNodeMap = new Map(allCharNodes.map(n => [n.id, n]));
++    const localNodeMap = new Map(allCharNodes
++        .filter(node => !rollingEnabled || isRecallableLocalCycleNode(node, rollingState))
++        .map(node => [node.id, node]));
+ 
+     for (const [boxId, hit] of boxHits) {
+         const box = await EventBoxDB.getById(boxId);
+@@ -102,7 +113,14 @@ export async function expandAndFormat(
+             renderItems.push(buildStandaloneItem(hit.sample, now));
+             continue;
+         }
+-        const item = await buildBoxItem(box, hit.topScore, localNodeMap, now);
++        const item = await buildBoxItem(
++            box,
++            hit.topScore,
++            localNodeMap,
++            now,
++            rollingEnabled,
++            rollingState,
++        );
+         if (item) renderItems.push(item);
+     }
+ 
+@@ -235,6 +253,7 @@ export async function expandAndFormat(
+ 
+     const trimmed = output.trim();
+     console.log(`🏰 [MemoryPalace] 本次召回 ${finalItems.length} 条 (${boxHits.size} 个 box + ${standaloneItems.length} 条独立)，${trimmed.length} 字`);
++    if (rollingEnabled && trimmed.length > 1_800) return `${trimmed.slice(0, 1_799)}…`;
+     return trimmed;
+ }
+ 
+@@ -262,18 +281,24 @@ async function buildBoxItem(
+     topScore: number,
+     localNodeMap: Map<string, MemoryNode>,
+     now: number,
++    rollingEnabled = false,
++    rollingState: RollingCycleState | null = null,
+ ): Promise<RenderItem | null> {
+     // 加载 summary（如有）
+     let summary: MemoryNode | null = null;
+     if (box.summaryNodeId) {
+         const s = localNodeMap.get(box.summaryNodeId) || (await MemoryNodeDB.getById(box.summaryNodeId)) || null;
+-        if (s) summary = s;
++        if (s && (!rollingEnabled || isRecallableLocalCycleNode(s, rollingState))) summary = s;
+     }
+     // 加载活节点（按时间升序）
+     const liveNodes: MemoryNode[] = [];
+     for (const id of box.liveMemoryIds) {
+         const n = localNodeMap.get(id) || (await MemoryNodeDB.getById(id));
+-        if (n && !n.archived) liveNodes.push(n);
++        if (
++            n
++            && !n.archived
++            && (!rollingEnabled || isRecallableLocalCycleNode(n, rollingState))
++        ) liveNodes.push(n);
+     }
+     liveNodes.sort((a, b) => a.createdAt - b.createdAt);
+ 
+diff --git a/utils/memoryPalace/groupPipeline.ts b/utils/memoryPalace/groupPipeline.ts
+index b70499b..9058204 100644
+--- a/utils/memoryPalace/groupPipeline.ts
++++ b/utils/memoryPalace/groupPipeline.ts
+@@ -23,6 +23,7 @@ import { MemoryNodeDB, MemoryVectorDB, ensureFloat32 } from './db';
+ import { getEmbeddings, cosineSimilarity } from './embedding';
+ import { extractGroupMemoriesFromBuffer } from './groupExtraction';
+ import { isMessageSemanticallyRelevant } from '../messageFormat';
++import { isOmbreAuthoritative } from './authority';
+ 
+ // ─── 群聊水位线：私聊用 200/100，群聊更宽松 300/200 ─────────────────
+ const HOT_ZONE_SIZE_GROUP = 300;
+@@ -312,9 +313,9 @@ export async function processGroupNewMessages(
+                     await MemoryVectorDB.save(memVec);
+ 
+                     // 远程向量异步同步（fire-and-forget）
+-                    if (remoteVectorCfg?.enabled && remoteVectorCfg.initialized) {
++                    if (remoteVectorCfg?.enabled && remoteVectorCfg.initialized && !isOmbreAuthoritative(remoteVectorCfg)) {
+                         try {
+-                            const { upsertVector } = await import('./supabaseVector');
++                            const { upsertVector } = await import('./remoteVector');
+                             upsertVector(remoteVectorCfg, node.id, member.id, vector, node, memberEmb.dimensions, memberEmb.model).catch(() => {});
+                         } catch { /* 忽略动态导入失败 */ }
+                     }
+diff --git a/utils/memoryPalace/hybridSearch.rollingCycle.test.ts b/utils/memoryPalace/hybridSearch.rollingCycle.test.ts
+new file mode 100644
+index 0000000..aa41a30
+--- /dev/null
++++ b/utils/memoryPalace/hybridSearch.rollingCycle.test.ts
+@@ -0,0 +1,93 @@
++import { beforeEach, describe, expect, it, vi } from 'vitest';
++import type { MemoryNode, RemoteVectorConfig } from './types';
++
++const mocks = vi.hoisted(() => ({
++    vectorSearch: vi.fn(),
++}));
++
++vi.mock('./vectorSearch', () => ({ vectorSearch: mocks.vectorSearch }));
++vi.mock('./embedding', () => ({ getEmbedding: vi.fn() }));
++vi.mock('./db', () => ({
++    MemoryNodeDB: { getByCharId: vi.fn() },
++}));
++
++import { ensureRollingCycleState } from './rollingCycle';
++import { hybridSearch } from './hybridSearch';
++
++const node = (id: string, localCycleId: string): MemoryNode => ({
++    id,
++    charId: 'yanke',
++    content: 'only vector match',
++    room: 'study',
++    tags: [],
++    importance: 5,
++    mood: 'neutral',
++    embedded: true,
++    createdAt: Date.now(),
++    lastAccessedAt: Date.now(),
++    accessCount: 0,
++    origin: 'extraction',
++    localCycleId,
++});
++
++describe('hybrid search during a rolling cycle', () => {
++    beforeEach(() => {
++        vi.clearAllMocks();
++        vi.stubEnv('VITE_MEMORY_ROLLING_CYCLES', '1');
++        localStorage.clear();
++    });
++
++    it('uses local vectors and never forwards the remote config', async () => {
++        const state = ensureRollingCycleState('yanke', 0, 1_000);
++        const local = node('local-vector-only', state.active.id);
++        mocks.vectorSearch.mockResolvedValue([{ node: local, similarity: 0.95 }]);
++        const remote = {
++            enabled: true,
++            initialized: true,
++            provider: 'ombre',
++        } as RemoteVectorConfig;
++
++        const result = await hybridSearch(
++            'unrelated lexical query',
++            'yanke',
++            { baseUrl: 'https://embedding.invalid', apiKey: 'x', model: 'm', dimensions: 3 },
++            10,
++            remote,
++            {
++                queryVector: new Float32Array([1, 0, 0]),
++                allNodes: [local],
++                allVectors: [],
++            },
++        );
++
++        expect(mocks.vectorSearch).toHaveBeenCalledTimes(1);
++        expect(mocks.vectorSearch.mock.calls[0][4]).toBeUndefined();
++        expect(result.map(item => item.node.id)).toContain(local.id);
++    });
++
++    it('still forbids remote search when rolling is enabled before state exists', async () => {
++        const local = node('orphan-local', 'legacy-cycle');
++        mocks.vectorSearch.mockResolvedValue([{ node: local, similarity: 0.9 }]);
++        const remote = {
++            enabled: true,
++            initialized: true,
++            provider: 'ombre',
++        } as RemoteVectorConfig;
++
++        const result = await hybridSearch(
++            'query',
++            'yanke',
++            { baseUrl: 'https://embedding.invalid', apiKey: 'x', model: 'm', dimensions: 3 },
++            10,
++            remote,
++            {
++                queryVector: new Float32Array([1, 0, 0]),
++                allNodes: [local],
++                allVectors: [],
++            },
++        );
++
++        expect(mocks.vectorSearch.mock.calls[0][4]).toBeUndefined();
++        expect(result.map(item => item.node.id)).toContain(local.id);
++    });
++});
+diff --git a/utils/memoryPalace/hybridSearch.ts b/utils/memoryPalace/hybridSearch.ts
+index 14f49c7..77385a3 100644
+--- a/utils/memoryPalace/hybridSearch.ts
++++ b/utils/memoryPalace/hybridSearch.ts
+@@ -11,6 +11,7 @@ import { vectorSearch } from './vectorSearch';
+ import { bm25Search, bm25SearchIndexed, bm25SearchDualRun } from './bm25';
+ import { bm25Index } from './bm25Index';
+ import { calculateEffectiveImportance } from './consolidation';
++import { isRecallableLocalCycleNode, isRollingCycleEnabled, readRollingCycleState } from './rollingCycle';
+ 
+ // ─── BM25 灰度开关 ────────────────────────────────────
+ //
+@@ -118,11 +119,23 @@ export async function hybridSearch(
+     // 落在 study 房间，imp 衰减过）。
+     // 结论：候选池不应作为召回广度的旋钮。精准度靠 per-message 多路搜
+     // + imp floor 在 pipeline 层解决，候选池 30 已足够。
+-    const vectorResults = await vectorSearch(queryVector, charId, 0.3, 30, remoteVectorConfig, prefetch?.allVectors);
++    const rollingEnabled = isRollingCycleEnabled();
++    const rollingState = rollingEnabled ? readRollingCycleState(charId) : null;
++    const vectorResults = await vectorSearch(
++        queryVector,
++        charId,
++        0.3,
++        30,
++        rollingEnabled ? undefined : remoteVectorConfig,
++        prefetch?.allVectors,
++        query,
++    );
+ 
+     // 3. BM25 搜索（排除 archived 节点 —— 它们已被压入 EventBox summary）
+     const allNodes = prefetch?.allNodes ?? await MemoryNodeDB.getByCharId(charId);
+-    const searchableNodes = allNodes.filter(n => n.embedded && !n.archived);
++    const isSearchableForMode = (node: MemoryNode) =>
++        !rollingEnabled || isRecallableLocalCycleNode(node, rollingState);
++    const searchableNodes = allNodes.filter(n => n.embedded && !n.archived && isSearchableForMode(n));
+ 
+     // 倒排索引按"全量节点"构建（含 archived / 未 embedded），unarchive 后立即可搜，
+     // 实际过滤交给 bm25SearchIndexed 用 searchableNodes 的 id 集做白名单。
+@@ -154,7 +167,7 @@ export async function hybridSearch(
+         // 优先使用本地完整 node（含 eventBoxId / archived 等最新状态）
+         const fullNode = localNodeMap.get(vr.node.id) || vr.node;
+         // 二次保险：本地态显示 archived → 跳过（远程刚被 archive 但 RPC 未及时反映的情况）
+-        if (fullNode.archived) continue;
++        if (fullNode.archived || !isSearchableForMode(fullNode)) continue;
+         scoreMap.set(vr.node.id, {
+             node: fullNode,
+             vectorSim: vr.similarity,
+diff --git a/utils/memoryPalace/index.ts b/utils/memoryPalace/index.ts
+index ebbc7ff..c9f59fe 100644
+--- a/utils/memoryPalace/index.ts
++++ b/utils/memoryPalace/index.ts
+@@ -16,6 +16,8 @@ export { ROOM_CONFIGS, ROOM_LABELS, getRoomLabel, PERSONALITY_WEIGHTS, EVENT_BOX
+ 
+ // 数据库
+ export { MemoryNodeDB, MemoryVectorDB, MemoryLinkDB, MemoryBatchDB, TopicBoxDB, AnticipationDB, EventBoxDB, RoomPlateDB, DigestReportDB } from './db';
++export { isOmbreAuthoritative, OMBRE_AUTHORITATIVE_BUILD } from './authority';
++export { refreshAuthoritativeCache, refreshSelfNarrativeCandidateCache } from './authoritativeCache';
+ 
+ // Embedding
+ export { getEmbedding, getEmbeddings, cosineSimilarity } from './embedding';
+@@ -44,7 +46,7 @@ export { formatMemoryDateWithDistance } from './memoryDate';
+ 
+ // 集成
+ export type { LightLLMConfig, PipelineResult, DiaryIngestResult } from './pipeline';
+-export { retrieveMemories, injectMemoryPalace, processNewMessages, getMemoryPalaceHighWaterMark, ingestDiaryToPalace } from './pipeline';
++export { retrieveMemories, injectMemoryPalace, buildAcceptedSelfNarrativeInjection, processNewMessages, getMemoryPalaceHighWaterMark, ingestDiaryToPalace } from './pipeline';
+ export {
+     DEFAULT_MEMORY_PALACE_WATERLINE,
+     MEMORY_PALACE_WATERLINE_PRESETS,
+@@ -66,6 +68,39 @@ export {
+ // 认知消化
+ export { runCognitiveDigestion, incrementDigestRound, getDigestRoundCount, getLastDigestTs, detectPersonalityStyle } from './digestion';
+ export type { DigestResult } from './digestion';
++export {
++    SELF_NARRATIVE_TAG,
++    SELF_NARRATIVE_CANDIDATE_TAG,
++    SELF_NARRATIVE_ACCEPTED_TAG,
++    SELF_NARRATIVE_OBSERVING_TAG,
++    SELF_NARRATIVE_MISJUDGED_TAG,
++    SELF_NARRATIVE_REVISED_TAG,
++    isSelfNarrativeCandidate,
++    isSelfNarrativeAccepted,
++    isSelfNarrativeMisjudged,
++    isSelfNarrativeRecord,
++    acceptSelfNarrative,
++    observeSelfNarrative,
++    reviseSelfNarrative,
++    markSelfNarrativeMisjudged,
++    createSelfNarrativeCandidate,
++} from './selfNarrative';
++export {
++    STABLE_COGNITION_TAG,
++    STABLE_COGNITION_DOWNGRADED_TAG,
++    isStableCognitionRecord,
++    isStableCognition,
++    createStableCognition,
++    reviseStableCognition,
++    downgradeStableCognition,
++    parseStableCognition,
++    serializeStableCognition,
++} from './stableCognition';
++export type {
++    StableCognitionData,
++    StableCognitionEvidence,
++    StableCognitionInput,
++} from './stableCognition';
+ 
+ // 迁移
+ export { migrateOldMemories, getAvailableMonths, getAvailableChunks } from './migration';
+@@ -93,6 +128,7 @@ export {
+ // 一键清空（本地 + 云端）
+ export { wipeAllMemoryPalace } from './wipe';
+ export type { WipeResult } from './wipe';
++export { deleteMemoryCompletely } from './deleteMemory';
+ 
+ // 导出 / 导入（接入外置记忆库、跨设备迁移用）
+ export { exportMemoryPalace, importMemoryPalace, isMemoryPalaceExportFile } from './export';
+diff --git a/utils/memoryPalace/ombreMemory.ts b/utils/memoryPalace/ombreMemory.ts
+new file mode 100644
+index 0000000..e7914ca
+--- /dev/null
++++ b/utils/memoryPalace/ombreMemory.ts
+@@ -0,0 +1,61 @@
++/** SullyOS <-> Ombre long-term memory adapter. Ombre owns embeddings. */
++import type { MemoryNode, RemoteVectorConfig } from './types';
++import { ownedServiceCredentials, resolveOmbreMemoryUrl, sullyAppAuthHeaders } from '../deploymentUrls';
++
++export interface RemoteMemoryHit {
++    memoryId: string; content: string; similarity: number; room: string; importance: number; tags: string[]; mood: string;
++    valence: number | null; arousal: number | null; createdAt: number; lastAccessedAt: number; accessCount: number;
++    pinnedUntil: number | null; sourceId: string | null; origin: string | null; archived: boolean; isSummary: boolean; eventBoxId: string | null;
++}
++
++function baseUrl(config: RemoteVectorConfig): string { return resolveOmbreMemoryUrl(config.ombreUrl); }
++function headers(config: RemoteVectorConfig): Record<string, string> {
++    const result: Record<string, string> = { 'Content-Type': 'application/json', ...sullyAppAuthHeaders() };
++    if (config.ombreToken) result['X-Sully-Memory-Token'] = config.ombreToken;
++    return result;
++}
++async function jsonRequest<T>(config: RemoteVectorConfig, path: string, init?: RequestInit): Promise<T> {
++    const response = await fetch(`${baseUrl(config)}${path}`, { credentials: ownedServiceCredentials, ...init, headers: { ...headers(config), ...(init?.headers || {}) } });
++    if (!response.ok) throw new Error(`Ombre HTTP ${response.status}`);
++    return response.json() as Promise<T>;
++}
++function nodePayload(memoryId: string, charId: string, node: MemoryNode, dimensions?: number, model?: string) { return { memoryId, charId, dimensions, model, node }; }
++
++export async function testConnection(config: RemoteVectorConfig): Promise<{ ok: boolean; tableExists: boolean; message: string }> {
++    try { const result = await jsonRequest<{ ok: boolean; message?: string }>(config, '/health'); return { ok: !!result.ok, tableExists: !!result.ok, message: result.message || (result.ok ? 'Ombre memory connected' : 'Ombre memory unavailable') }; }
++    catch (error: unknown) { return { ok: false, tableExists: false, message: `Connection failed: ${error instanceof Error ? error.message : 'unknown error'}` }; }
++}
++export async function upsertVector(config: RemoteVectorConfig, memoryId: string, charId: string, _vector: number[] | Float32Array | Uint8Array, node: MemoryNode, dimensions: number, model?: string): Promise<boolean> {
++    try { await jsonRequest(config, '/memories', { method: 'POST', body: JSON.stringify(nodePayload(memoryId, charId, node, dimensions, model)) }); return true; } catch { return false; }
++}
++export async function upsertVectorBatch(config: RemoteVectorConfig, items: { memoryId: string; charId: string; vector: number[] | Float32Array | Uint8Array; node: MemoryNode; dimensions: number; model?: string }[]): Promise<boolean> {
++    if (!items.length) return true;
++    try { await jsonRequest(config, '/memories/batch', { method: 'POST', body: JSON.stringify({ items: items.map(({ memoryId, charId, node, dimensions, model }) => nodePayload(memoryId, charId, node, dimensions, model)) }) }); return true; } catch { return false; }
++}
++export async function searchVectors(config: RemoteVectorConfig, _queryVector: number[] | Float32Array | Uint8Array, charId: string, threshold = 0.3, topK = 20, queryText?: string): Promise<RemoteMemoryHit[]> {
++    if (!queryText?.trim()) throw new Error('Ombre search requires query text');
++    const result = await jsonRequest<{ results: RemoteMemoryHit[] }>(config, '/search', { method: 'POST', body: JSON.stringify({ query: queryText, charId, threshold, topK }) });
++    return result.results || [];
++}
++export async function fetchRemoteByRoom(config: RemoteVectorConfig, charId: string, room: string, limit = 50): Promise<MemoryNode[]> {
++    try { const query = new URLSearchParams({ charId, room, limit: String(limit) }); const result = await jsonRequest<{ memories: MemoryNode[] }>(config, `/memories?${query}`); return result.memories || []; } catch { return []; }
++}
++export interface RemoteMemoryPage { memories: MemoryNode[]; total: number; offset: number; limit: number; }
++export async function fetchRemotePage(config: RemoteVectorConfig, charId: string, offset = 0, limit = 100, room?: string): Promise<RemoteMemoryPage> {
++    const query = new URLSearchParams({ charId, offset: String(offset), limit: String(limit) }); if (room) query.set('room', room); return jsonRequest<RemoteMemoryPage>(config, `/memories?${query}`);
++}
++async function bulkPatch(config: RemoteVectorConfig, memoryIds: string[], patch: Record<string, unknown>): Promise<boolean> {
++    if (!memoryIds.length) return true;
++    try { await jsonRequest(config, '/memories/bulk', { method: 'PATCH', body: JSON.stringify({ memoryIds, patch }) }); return true; } catch { return false; }
++}
++export const bulkSetArchived = (config: RemoteVectorConfig, memoryIds: string[], archived: boolean) => bulkPatch(config, memoryIds, { archived });
++export const bulkSetRoom = (config: RemoteVectorConfig, memoryIds: string[], room: string) => bulkPatch(config, memoryIds, { room });
++export async function deleteVector(config: RemoteVectorConfig, memoryId: string): Promise<boolean> { try { await jsonRequest(config, `/memories/${encodeURIComponent(memoryId)}`, { method: 'DELETE' }); return true; } catch { return false; } }
++export async function getVectorCount(config: RemoteVectorConfig, charId?: string): Promise<number> {
++    try { const query = charId ? `?${new URLSearchParams({ charId })}` : ''; const result = await jsonRequest<{ count: number }>(config, `/count${query}`); return Number(result.count) || 0; } catch { return 0; }
++}
++export async function syncLocalToRemote(config: RemoteVectorConfig, getLocalVectors: () => Promise<{ memoryId: string; charId: string; vector: number[] | Float32Array | Uint8Array; node: MemoryNode; dimensions: number; model?: string }[]>, onProgress?: (done: number, total: number) => void): Promise<{ synced: number; failed: number }> {
++    const items = await getLocalVectors(); let synced = 0; let failed = 0;
++    for (let i = 0; i < items.length; i += 25) { const batch = items.slice(i, i + 25); if (await upsertVectorBatch(config, batch)) synced += batch.length; else failed += batch.length; onProgress?.(Math.min(i + batch.length, items.length), items.length); }
++    return { synced, failed };
++}
+diff --git a/utils/memoryPalace/pipeline.ts b/utils/memoryPalace/pipeline.ts
+index 6f8d2f6..c033ecf 100644
+--- a/utils/memoryPalace/pipeline.ts
++++ b/utils/memoryPalace/pipeline.ts
+@@ -28,15 +28,18 @@ import {
+     DEFAULT_MEMORY_PALACE_WATERLINE,
+     resolveMemoryPalaceWaterline,
+ } from './waterline';
++import { resolveAuthoritativeConfig } from './authority';
+ 
+ /** 从 localStorage 读取远程向量配置（避免在每个调用点都传参） */
+ function getRemoteVectorConfig(): RemoteVectorConfig | undefined {
+     try {
+         const raw = localStorage.getItem('os_remote_vector_config');
+-        if (!raw) return undefined;
++        if (!raw) return resolveAuthoritativeConfig(null) ?? undefined;
+         const config = JSON.parse(raw) as RemoteVectorConfig;
+-        return (config.enabled && config.initialized) ? config : undefined;
+-    } catch { return undefined; }
++        return resolveAuthoritativeConfig(
++            (config.enabled && config.initialized) ? config : null,
++        ) ?? undefined;
++    } catch { return resolveAuthoritativeConfig(null) ?? undefined; }
+ }
+ 
+ /** 从 localStorage 读取 rerank 配置。关闭或未配齐时返回 undefined，调用方跳过。 */
+@@ -81,6 +84,12 @@ import { MemoryNodeDB, MemoryVectorDB, MemoryLinkDB, AnticipationDB } from './db
+ import { DB } from '../db';
+ import { isMessageSemanticallyRelevant, formatMessageForPrompt } from '../messageFormat';
+ import { sanitizeQuerySourceMessages } from './querySanitizer';
++import { refreshSelfNarrativeCandidateCache } from './authoritativeCache';
++import { buildSelfNarrativeQuery } from './selfNarrativeContext';
++import {
++    formatStableCognitionContext,
++    selectStableCognitions,
++} from './stableCognitionContext';
+ import { getLocalDateKey } from '../localDate';
+ import { extractExternalMemoryText } from './externalMemory';
+ import {
+@@ -88,6 +97,7 @@ import {
+     getReliableMemoryPalaceHighWaterMark,
+     setReliableMemoryPalaceHighWaterMark,
+ } from './highWaterMark';
++import { attachNodesToRollingCycle, ensureRollingCycleState, isRollingCycleEnabled } from './rollingCycle';
+ 
+ // ─── 轻量 LLM 配置类型 ───────────────────────────────
+ 
+@@ -1020,6 +1030,42 @@ export async function injectMemoryPalace(
+  * @param userName 用户昵称
+  */
+ /** 一次日记归档对宫殿的具体影响, 用 status 区分各种"为什么没入宫"的情况, 供 UI 弹窗直接展示 */
++/**
++ * Build the independently governed stable-cognition block.
++ * Raw self-narrative records remain archived and non-embedded. Only manually
++ * integrated stable cognitions may enter this block after relevance scoring.
++ */
++export async function buildAcceptedSelfNarrativeInjection(
++    char: { id: string; name?: string; memoryPalaceEnabled?: boolean },
++    recentMessages: Message[],
++    queryHint?: string,
++    userName?: string,
++): Promise<string> {
++    if (!char.memoryPalaceEnabled) return '';
++    try {
++        const nodes = await refreshSelfNarrativeCandidateCache(
++            char.id,
++            getRemoteVectorConfig(),
++        ).catch(async error => {
++            console.warn(`[SelfNarrative] remote refresh failed; using offline cache: ${error?.message || error}`);
++            return MemoryNodeDB.getByCharId(char.id);
++        });
++        const query = buildSelfNarrativeQuery(
++            recentMessages,
++            queryHint,
++            char.name,
++            userName,
++        );
++        return formatStableCognitionContext(
++            selectStableCognitions(nodes, query),
++        );
++    } catch (error) {
++        const message = error instanceof Error ? error.message : String(error);
++        console.warn(`[SelfNarrative] controlled injection skipped: ${message}`);
++        return '';
++    }
++}
++
+ export type DiaryIngestResult =
+     | { status: 'palace_disabled' }
+     | { status: 'lightllm_missing' }
+@@ -1440,6 +1486,11 @@ async function extractAndStoreMemories(
+ 
+         const memories = allMemories;
+ 
++        if (isRollingCycleEnabled() && memories.length > 0) {
++            const cycle = ensureRollingCycleState(charId, getMemoryPalaceHighWaterMark(charId));
++            attachNodesToRollingCycle(memories, cycle.active.id);
++        }
++
+         if (memories.length === 0) {
+             console.warn(`🏰 [Pipeline] 所有批次共提取 0 条记忆（${toProcess.length} 条消息），不更新高水位，下次重试`);
+             return { stored: 0, skipped: 0, memories: [], batches: batchResults, crossTimeLinks: allCrossTimeLinks, eventBoxHints: allEventBoxHints, corrections: allCorrections };
+@@ -1462,6 +1513,11 @@ async function extractAndStoreMemories(
+         // 8. 向量化（Embedding API，按批次）。向量化失败 → stored=0，caller 据此决定不更新水位。
+         console.log(`🏰 [Pipeline] 开始向量化 ${memories.length} 条记忆...`);
+         onProgress?.(`正在向量化 ${memories.length} 条记忆...`);
++        if (isRollingCycleEnabled()) {
++            // A commit may have closed the cycle while extraction/model checks awaited.
++            const current = ensureRollingCycleState(charId, getMemoryPalaceHighWaterMark(charId));
++            attachNodesToRollingCycle(memories, current.active.id);
++        }
+         const vectorResult = await vectorizeAndStore(memories, embeddingConfig, getRemoteVectorConfig(), { skipDedup });
+         console.log(`🏰 [Pipeline] 向量化完成：${vectorResult.stored} 条存储, ${vectorResult.skipped} 条去重跳过`);
+ 
+diff --git a/utils/memoryPalace/relatedMemories.ts b/utils/memoryPalace/relatedMemories.ts
+index 90fae84..c3ac4f7 100644
+--- a/utils/memoryPalace/relatedMemories.ts
++++ b/utils/memoryPalace/relatedMemories.ts
+@@ -20,6 +20,7 @@ import type { RelatedMemoryRef } from './extraction';
+ import { getEmbeddings } from './embedding';
+ import { vectorSearch, isRemoteSearchBroken } from './vectorSearch';
+ import { ensureFloat32 } from './db';
++import { isRecallableLocalCycleNode, isRollingCycleEnabled, readRollingCycleState } from './rollingCycle';
+ 
+ /** 从 localStorage 读取远程向量配置，判断本次是走远程还是本地路径。
+  *  关键：enabled=false 或未完成 initialized 时必须视为"没有远程配置"，
+@@ -27,6 +28,7 @@ import { ensureFloat32 } from './db';
+  *  继续尝试连远程 → 报连不上。其他模块（pipeline / digestion / db /
+  *  eventBoxCompression）都是这个写法，这里是历史漏检。 */
+ function getLocalRemoteConfig(): RemoteVectorConfig | undefined {
++    if (isRollingCycleEnabled()) return undefined;
+     try {
+         const raw = localStorage.getItem('os_remote_vector_config');
+         if (!raw) return undefined;
+@@ -124,7 +126,11 @@ export async function fetchRelatedMemoriesForExtraction(
+                 return false;
+             }
+             const allNodes = await MemoryNodeDB.getByCharId(charId);
+-            localNodeMap = new Map(allNodes.map(n => [n.id, n]));
++            const rollingState = isRollingCycleEnabled() ? readRollingCycleState(charId) : null;
++            localNodeMap = new Map(allNodes
++                .filter(node => !isRollingCycleEnabled() || isRecallableLocalCycleNode(node, rollingState))
++                .map(node => [node.id, node])
++            );
+             return true;
+         }
+         function localScoreOne(qv: Float32Array): { node: any; similarity: number }[] {
+@@ -159,7 +165,15 @@ export async function fetchRelatedMemoriesForExtraction(
+                 }
+                 const batch = vectors.slice(i, i + CONCURRENCY);
+                 const batchResults = await Promise.all(
+-                    batch.map(vec => vectorSearch(vec, charId, threshold, perQueryTopK, remoteCfg))
++                    batch.map((vec, offset) => vectorSearch(
++                        vec,
++                        charId,
++                        threshold,
++                        perQueryTopK,
++                        remoteCfg,
++                        undefined,
++                        workingSnippets[i + offset],
++                    ))
+                 );
+                 searchResults.push(...batchResults);
+                 consumed = i + batch.length;
+diff --git a/utils/memoryPalace/remoteVector.ts b/utils/memoryPalace/remoteVector.ts
+new file mode 100644
+index 0000000..4b34ff5
+--- /dev/null
++++ b/utils/memoryPalace/remoteVector.ts
+@@ -0,0 +1,17 @@
++/** Provider-neutral remote memory facade. */
++import type { RemoteVectorConfig } from './types';
++import * as supabase from './supabaseVector';
++import * as ombre from './ombreMemory';
++export { INIT_SQL } from './supabaseVector';
++function provider(config: RemoteVectorConfig) { return config.provider === 'ombre' ? ombre : supabase; }
++export const testConnection = (config: RemoteVectorConfig) => provider(config).testConnection(config);
++export const upsertVector = (...args: Parameters<typeof supabase.upsertVector>) => provider(args[0]).upsertVector(...args);
++export const upsertVectorBatch = (...args: Parameters<typeof supabase.upsertVectorBatch>) => provider(args[0]).upsertVectorBatch(...args);
++export const fetchRemoteByRoom = (...args: Parameters<typeof supabase.fetchRemoteByRoom>) => provider(args[0]).fetchRemoteByRoom(...args);
++export const fetchRemotePage = (config: RemoteVectorConfig, charId: string, offset = 0, limit = 100, room?: string) => { if (config.provider !== 'ombre') throw new Error('Paged authoritative sync requires Ombre'); return ombre.fetchRemotePage(config, charId, offset, limit, room); };
++export const bulkSetArchived = (...args: Parameters<typeof supabase.bulkSetArchived>) => provider(args[0]).bulkSetArchived(...args);
++export const bulkSetRoom = (...args: Parameters<typeof supabase.bulkSetRoom>) => provider(args[0]).bulkSetRoom(...args);
++export const deleteVector = (...args: Parameters<typeof supabase.deleteVector>) => provider(args[0]).deleteVector(...args);
++export const getVectorCount = (...args: Parameters<typeof supabase.getVectorCount>) => provider(args[0]).getVectorCount(...args);
++export const syncLocalToRemote = (...args: Parameters<typeof supabase.syncLocalToRemote>) => provider(args[0]).syncLocalToRemote(...args);
++export function searchVectors(config: RemoteVectorConfig, queryVector: number[] | Float32Array | Uint8Array, charId: string, threshold = 0.3, topK = 20, queryText?: string) { return config.provider === 'ombre' ? ombre.searchVectors(config, queryVector, charId, threshold, topK, queryText) : supabase.searchVectors(config, queryVector, charId, threshold, topK); }
+diff --git a/utils/memoryPalace/rollingCycle.test.ts b/utils/memoryPalace/rollingCycle.test.ts
+new file mode 100644
+index 0000000..ecaf0c0
+--- /dev/null
++++ b/utils/memoryPalace/rollingCycle.test.ts
+@@ -0,0 +1,122 @@
++import { beforeEach, describe, expect, it, vi } from 'vitest';
++import type { MemoryNode } from './types';
++import {
++    ROLLING_CYCLE_MAX_AGE_MS,
++    ROLLING_CYCLE_NODE_LIMIT,
++    assessRollingCycle,
++    attachNodesToRollingCycle,
++    createRollingCycle,
++    ensureRollingCycleState,
++    ensureNodeInActiveRollingCycle,
++    isRecallableLocalCycleNode,
++    readRollingCycleState,
++    startNextRollingCycle,
++    writeRollingCycleState,
++} from './rollingCycle';
++
++function node(id: string, overrides: Partial<MemoryNode> = {}): MemoryNode {
++    return {
++        id,
++        charId: 'yanke',
++        content: `memory ${id}`,
++        room: 'study',
++        tags: [],
++        importance: 5,
++        mood: 'neutral',
++        embedded: true,
++        createdAt: 1,
++        lastAccessedAt: 1,
++        accessCount: 0,
++        origin: 'extraction',
++        ...overrides,
++    };
++}
++
++describe('rolling memory cycles', () => {
++    beforeEach(() => {
++        vi.stubEnv('VITE_MEMORY_ROLLING_CYCLES', '1');
++        localStorage.clear();
++    });
++
++    it('starts at the current message high-water mark and persists', () => {
++        const state = ensureRollingCycleState('yanke', 4156, 1_000);
++        expect(state.active.startHighWaterMark).toBe(4156);
++        expect(readRollingCycleState('yanke')?.active.id).toBe(state.active.id);
++    });
++
++    it('tags local nodes but never tags Ombre mirrors', () => {
++        const local = node('local');
++        const mirror = node('mirror', { origin: 'ombre' });
++        attachNodesToRollingCycle([local, mirror], 'cycle-1');
++        expect(local.localCycleId).toBe('cycle-1');
++        expect(mirror.localCycleId).toBeUndefined();
++    });
++
++    it('becomes due at 150 active local memories', () => {
++        const cycle = createRollingCycle('yanke', 0, 1_000);
++        const nodes = Array.from({ length: ROLLING_CYCLE_NODE_LIMIT }, (_, i) =>
++            node(String(i), { localCycleId: cycle.id })
++        );
++        expect(assessRollingCycle(nodes, cycle, 2_000)).toMatchObject({
++            due: true,
++            reason: 'node_limit',
++            nodeCount: 150,
++        });
++    });
++
++    it('becomes due after three days even below the node limit', () => {
++        const cycle = createRollingCycle('yanke', 0, 1_000);
++        const nodes = [node('one', { localCycleId: cycle.id })];
++        expect(assessRollingCycle(nodes, cycle, 1_000 + ROLLING_CYCLE_MAX_AGE_MS)).toMatchObject({
++            due: true,
++            reason: 'age_limit',
++        });
++    });
++
++    it('does not count mirrors, archived nodes, or already committed nodes', () => {
++        const cycle = createRollingCycle('yanke', 0, 1_000);
++        const nodes = [
++            node('valid', { localCycleId: cycle.id }),
++            node('mirror', { origin: 'ombre', localCycleId: cycle.id }),
++            node('archived', { localCycleId: cycle.id, archived: true }),
++            node('committed', { localCycleId: cycle.id, archivedToOmbreAt: 9_999 }),
++        ];
++        expect(assessRollingCycle(nodes, cycle, 2_000).nodeCount).toBe(1);
++    });
++
++    it('keeps the previous cycle in bounded history', () => {
++        const first = ensureRollingCycleState('yanke', 100, 1_000);
++        first.active.status = 'cleaned';
++        const second = startNextRollingCycle(first, 200, 2_000);
++        expect(second.history).toHaveLength(1);
++        expect(second.history[0].status).toBe('cleaned');
++        expect(second.active.startHighWaterMark).toBe(200);
++    });
++
++    it('uses unique ids without moving startedAt into the future', () => {
++        const first = ensureRollingCycleState('yanke', 100, 2_000);
++        const second = startNextRollingCycle(first, 200, 2_000);
++        expect(second.active.id).not.toBe(first.active.id);
++        expect(second.active.startedAt).toBe(2_000);
++    });
++
++    it('normalizes legacy ledgers and keeps failed cycles recallable', () => {
++        const first = ensureRollingCycleState('yanke', 100, 1_000);
++        first.active.status = 'failed';
++        const second = startNextRollingCycle(first, 200, 2_000);
++        const raw = JSON.parse(localStorage.getItem('mp_cycle_state_yanke')!);
++        delete raw.history[0].committedNodeIds;
++        delete raw.history[0].cleanupSnapshotRecorded;
++        localStorage.setItem('mp_cycle_state_yanke', JSON.stringify(raw));
++
++        const restored = readRollingCycleState('yanke')!;
++        const failedNode = node('failed', { localCycleId: first.active.id });
++        expect(restored.history[0].committedNodeIds).toEqual([]);
++        expect(restored.history[0].cleanupSnapshotRecorded).toBe(false);
++        expect(isRecallableLocalCycleNode(failedNode, restored)).toBe(true);
++
++        writeRollingCycleState(restored);
++        expect(ensureNodeInActiveRollingCycle(failedNode)).toBe(true);
++        expect(failedNode.localCycleId).toBe(second.active.id);
++    });
++});
+diff --git a/utils/memoryPalace/rollingCycle.ts b/utils/memoryPalace/rollingCycle.ts
+new file mode 100644
+index 0000000..22ced64
+--- /dev/null
++++ b/utils/memoryPalace/rollingCycle.ts
+@@ -0,0 +1,308 @@
++import type { MemoryNode } from './types';
++
++export const ROLLING_CYCLE_NODE_LIMIT = 150;
++export const ROLLING_CYCLE_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
++export const ROLLING_CYCLE_STATE_VERSION = 1;
++
++const STATE_KEY = (charId: string) => `mp_cycle_state_${charId}`;
++const ENABLED_KEY = 'mp_rolling_cycles_enabled';
++const processLocks = new Map<string, Promise<void>>();
++
++export type RollingCycleStatus =
++    | 'collecting'
++    | 'preparing'
++    | 'uploading'
++    | 'verifying'
++    | 'committed'
++    | 'cleaned'
++    | 'failed';
++
++export interface RollingCycleRecord {
++    id: string;
++    charId: string;
++    status: RollingCycleStatus;
++    startedAt: number;
++    startHighWaterMark: number;
++    closedAt: number | null;
++    committedAt: number | null;
++    cleanedAt: number | null;
++    candidateCount: number;
++    uploadedCount: number;
++    remoteBucketIds: string[];
++    /** Exact local snapshot eligible for cleanup after a verified commit. */
++    committedNodeIds: string[];
++    /** Distinguishes a verified empty snapshot from legacy state with no snapshot ledger. */
++    cleanupSnapshotRecorded: boolean;
++    error: string | null;
++}
++
++export interface RollingCycleState {
++    version: number;
++    charId: string;
++    active: RollingCycleRecord;
++    history: RollingCycleRecord[];
++}
++
++export interface RollingCycleTrigger {
++    due: boolean;
++    reason: 'node_limit' | 'age_limit' | null;
++    nodeCount: number;
++    ageMs: number;
++    nodeLimit: number;
++    maxAgeMs: number;
++}
++
++function storage(): Storage | null {
++    try {
++        return typeof localStorage === 'undefined' ? null : localStorage;
++    } catch {
++        return null;
++    }
++}
++
++function makeCycleId(charId: string, now: number): string {
++    const stamp = new Date(now).toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
++    return `cycle_${charId}_${stamp}`;
++}
++
++export function createRollingCycle(
++    charId: string,
++    startHighWaterMark: number,
++    now = Date.now(),
++): RollingCycleRecord {
++    return {
++        id: makeCycleId(charId, now),
++        charId,
++        status: 'collecting',
++        startedAt: now,
++        startHighWaterMark: Math.max(0, startHighWaterMark || 0),
++        closedAt: null,
++        committedAt: null,
++        cleanedAt: null,
++        candidateCount: 0,
++        uploadedCount: 0,
++        remoteBucketIds: [],
++        committedNodeIds: [],
++        cleanupSnapshotRecorded: false,
++        error: null,
++    };
++}
++
++export function isRollingCycleBuild(): boolean {
++    return import.meta.env.VITE_MEMORY_ROLLING_CYCLES === '1';
++}
++
++export function isRollingCycleEnabled(): boolean {
++    if (!isRollingCycleBuild()) return false;
++    const value = storage()?.getItem(ENABLED_KEY);
++    return value !== 'false';
++}
++
++export function setRollingCycleEnabled(enabled: boolean): void {
++    storage()?.setItem(ENABLED_KEY, enabled ? 'true' : 'false');
++}
++
++export function readRollingCycleState(charId: string): RollingCycleState | null {
++    const raw = storage()?.getItem(STATE_KEY(charId));
++    if (!raw) return null;
++    try {
++        const parsed = JSON.parse(raw) as RollingCycleState;
++        if (
++            parsed?.version !== ROLLING_CYCLE_STATE_VERSION
++            || parsed?.charId !== charId
++            || !parsed?.active?.id
++        ) return null;
++        const normalizeRecord = (record: RollingCycleRecord): RollingCycleRecord => ({
++            ...record,
++            committedNodeIds: Array.isArray(record.committedNodeIds)
++                ? record.committedNodeIds
++                : [],
++            cleanupSnapshotRecorded: record.cleanupSnapshotRecorded === true,
++        });
++        return {
++            ...parsed,
++            active: normalizeRecord(parsed.active),
++            history: Array.isArray(parsed.history)
++                ? parsed.history.map(normalizeRecord)
++                : [],
++        };
++    } catch {
++        return null;
++    }
++}
++
++export function writeRollingCycleState(state: RollingCycleState): void {
++    storage()?.setItem(STATE_KEY(state.charId), JSON.stringify(state));
++}
++
++export async function withRollingCycleLock<T>(
++    charId: string,
++    task: () => Promise<T>,
++): Promise<T> {
++    const lockName = `sully-memory-rolling-cycle:${charId}`;
++    const webLocks = typeof navigator !== 'undefined'
++        ? (navigator as any).locks
++        : undefined;
++    if (webLocks?.request) {
++        return webLocks.request(lockName, { mode: 'exclusive' }, task);
++    }
++
++    const previous = processLocks.get(lockName) || Promise.resolve();
++    let release!: () => void;
++    const gate = new Promise<void>(resolve => { release = resolve; });
++    const tail = previous.then(() => gate);
++    processLocks.set(lockName, tail);
++    await previous;
++    try {
++        return await task();
++    } finally {
++        release();
++        if (processLocks.get(lockName) === tail) processLocks.delete(lockName);
++    }
++}
++
++export function ensureRollingCycleState(
++    charId: string,
++    startHighWaterMark: number,
++    now = Date.now(),
++): RollingCycleState {
++    const existing = readRollingCycleState(charId);
++    if (existing) return existing;
++    const state: RollingCycleState = {
++        version: ROLLING_CYCLE_STATE_VERSION,
++        charId,
++        active: createRollingCycle(charId, startHighWaterMark, now),
++        history: [],
++    };
++    writeRollingCycleState(state);
++    return state;
++}
++
++export function startNextRollingCycle(
++    state: RollingCycleState,
++    startHighWaterMark: number,
++    now = Date.now(),
++): RollingCycleState {
++    const allHistory = [...state.history, state.active];
++    const nonCleaned = allHistory.filter(cycle => cycle.status !== 'cleaned');
++    const cleaned = allHistory.filter(cycle => cycle.status === 'cleaned');
++    const cleanedBudget = Math.max(0, 20 - nonCleaned.length);
++    const retainedCleaned = cleanedBudget > 0 ? cleaned.slice(-cleanedBudget) : [];
++    const history = [...retainedCleaned, ...nonCleaned]
++        .sort((left, right) => left.startedAt - right.startedAt);
++    const active = createRollingCycle(state.charId, startHighWaterMark, now);
++    const usedIds = new Set(allHistory.map(cycle => cycle.id));
++    const baseId = active.id;
++    let suffix = 2;
++    while (usedIds.has(active.id)) {
++        active.id = `${baseId}_${suffix++}`;
++    }
++    const next: RollingCycleState = {
++        ...state,
++        active,
++        history,
++    };
++    writeRollingCycleState(next);
++    return next;
++}
++
++export function getRecallableCycleIds(state: RollingCycleState | null): Set<string> {
++    if (!state) return new Set();
++    return new Set([
++        state.active.id,
++        ...state.history
++            .filter(cycle => cycle.status !== 'cleaned')
++            .map(cycle => cycle.id),
++    ]);
++}
++
++export function isRecallableLocalCycleNode(
++    node: MemoryNode,
++    state: RollingCycleState | null,
++): boolean {
++    if (!isLocalCycleNode(node)) return false;
++    return !state || getRecallableCycleIds(state).has(node.localCycleId!);
++}
++
++/**
++ * Re-home a delayed local write after an archive operation closed its cycle.
++ * Returns true when the node was changed.
++ */
++export function ensureNodeInActiveRollingCycle(node: MemoryNode): boolean {
++    if (!isRollingCycleEnabled() || node.origin === 'ombre') return false;
++    const state = ensureRollingCycleState(node.charId, 0);
++    if (node.localCycleId === state.active.id && state.active.status === 'collecting') {
++        return false;
++    }
++    node.localCycleId = state.active.id;
++    node.archivedToOmbreAt = null;
++    return true;
++}
++
++export function attachNodesToRollingCycle(
++    nodes: MemoryNode[],
++    cycleId: string,
++): MemoryNode[] {
++    for (const node of nodes) {
++        if (node.origin === 'ombre') continue;
++        node.localCycleId = cycleId;
++        node.archivedToOmbreAt = null;
++    }
++    return nodes;
++}
++
++export function isLocalCycleNode(node: MemoryNode, cycleId?: string): boolean {
++    if (!node.localCycleId || node.origin === 'ombre') return false;
++    return cycleId ? node.localCycleId === cycleId : true;
++}
++
++export function assessRollingCycle(
++    nodes: MemoryNode[],
++    cycle: RollingCycleRecord,
++    now = Date.now(),
++    nodeLimit = ROLLING_CYCLE_NODE_LIMIT,
++    maxAgeMs = ROLLING_CYCLE_MAX_AGE_MS,
++): RollingCycleTrigger {
++    const nodeCount = nodes.filter(node =>
++        isLocalCycleNode(node, cycle.id)
++        && !node.archived
++        && !node.archivedToOmbreAt
++    ).length;
++    const ageMs = Math.max(0, now - cycle.startedAt);
++    return {
++        due: nodeCount >= nodeLimit || ageMs >= maxAgeMs,
++        reason: nodeCount >= nodeLimit ? 'node_limit' : ageMs >= maxAgeMs ? 'age_limit' : null,
++        nodeCount,
++        ageMs,
++        nodeLimit,
++        maxAgeMs,
++    };
++}
++
++export function exportRollingCycleStates(): Record<string, string> | undefined {
++    const source = storage();
++    if (!source) return undefined;
++    const result: Record<string, string> = {};
++    for (let i = 0; i < source.length; i++) {
++        const key = source.key(i);
++        if (key?.startsWith('mp_cycle_state_')) {
++            result[key] = source.getItem(key) || '';
++        }
++    }
++    const enabled = source.getItem(ENABLED_KEY);
++    if (enabled !== null) result[ENABLED_KEY] = enabled;
++    return Object.keys(result).length > 0 ? result : undefined;
++}
++
++export function restoreRollingCycleStates(values?: Record<string, string>): void {
++    const target = storage();
++    if (!target || !values) return;
++    for (const [key, value] of Object.entries(values)) {
++        if (
++            typeof value === 'string'
++            && (key.startsWith('mp_cycle_state_') || key === ENABLED_KEY)
++        ) {
++            target.setItem(key, value);
++        }
++    }
++}
+diff --git a/utils/memoryPalace/rollingCycleArchive.concurrent.test.ts b/utils/memoryPalace/rollingCycleArchive.concurrent.test.ts
+new file mode 100644
+index 0000000..6678507
+--- /dev/null
++++ b/utils/memoryPalace/rollingCycleArchive.concurrent.test.ts
+@@ -0,0 +1,220 @@
++import { beforeEach, describe, expect, it, vi } from 'vitest';
++import type { MemoryNode, RemoteVectorConfig } from './types';
++
++const mocks = vi.hoisted(() => ({
++    nodes: [] as MemoryNode[],
++    fetchRemotePage: vi.fn(),
++    upsertVectorBatch: vi.fn(),
++    searchVectors: vi.fn(),
++    getNodes: vi.fn(),
++    deleteVector: vi.fn(),
++    deleteNode: vi.fn(),
++}));
++
++vi.mock('./db', () => ({
++    MemoryNodeDB: {
++        getByCharId: mocks.getNodes,
++        saveManyLocal: vi.fn(async (updates: MemoryNode[]) => {
++            const byId = new Map(updates.map(node => [node.id, node]));
++            mocks.nodes = mocks.nodes.map(node => byId.get(node.id) || node);
++        }),
++        deleteLocal: mocks.deleteNode.mockImplementation(async (id: string) => {
++            mocks.nodes = mocks.nodes.filter(node => node.id !== id);
++        }),
++    },
++    EventBoxDB: {
++        getByCharId: vi.fn(async () => []),
++        delete: vi.fn(),
++        save: vi.fn(),
++    },
++    MemoryVectorDB: { delete: mocks.deleteVector },
++    MemoryLinkDB: { getByNodeId: vi.fn(async () => []), delete: vi.fn() },
++}));
++vi.mock('./ombreMemory', () => ({
++    fetchRemotePage: mocks.fetchRemotePage,
++    upsertVectorBatch: mocks.upsertVectorBatch,
++    searchVectors: mocks.searchVectors,
++}));
++
++import {
++    cleanupCommittedRollingCycle,
++    commitRollingCycleToOmbre,
++} from './rollingCycleArchive';
++import {
++    ensureRollingCycleState,
++    readRollingCycleState,
++} from './rollingCycle';
++
++const remote = {
++    enabled: true,
++    initialized: true,
++    provider: 'ombre',
++} as RemoteVectorConfig;
++const makeNode = (id: string, cycleId: string): MemoryNode => ({
++    id,
++    charId: 'yanke',
++    content: id,
++    room: 'study',
++    tags: [],
++    importance: 5,
++    mood: 'neutral',
++    embedded: true,
++    createdAt: 1,
++    lastAccessedAt: 1,
++    accessCount: 0,
++    origin: 'extraction',
++    localCycleId: cycleId,
++    archivedToOmbreAt: null,
++});
++
++describe('rolling cycle commit isolation', () => {
++    beforeEach(() => {
++        vi.clearAllMocks();
++        localStorage.clear();
++        mocks.nodes = [];
++        mocks.getNodes.mockImplementation(async () => mocks.nodes);
++        mocks.upsertVectorBatch.mockResolvedValue(true);
++        mocks.searchVectors.mockImplementation(async (
++            _config: RemoteVectorConfig,
++            _vector: Float32Array,
++            _charId: string,
++            _threshold: number,
++            _topK: number,
++            query: string,
++        ) => [{ memoryId: query }]);
++    });
++
++    it('freezes the committed snapshot and preserves concurrent new-cycle nodes', async () => {
++        const first = ensureRollingCycleState('yanke', 10, 1_000);
++        const original = makeNode('original', first.active.id);
++        mocks.nodes = [original];
++        let fetchCount = 0;
++        let inserted = false;
++        mocks.getNodes.mockImplementation(async () => {
++            if (!inserted) {
++                inserted = true;
++                const active = readRollingCycleState('yanke')!.active;
++                expect(active.id).not.toBe(first.active.id);
++                expect(active.startedAt).toBeLessThanOrEqual(Date.now());
++                expect(active.startHighWaterMark).toBe(0);
++                mocks.nodes.push(makeNode('concurrent', active.id));
++            }
++            return mocks.nodes;
++        });
++        mocks.fetchRemotePage.mockImplementation(async () => {
++            fetchCount++;
++            if (fetchCount === 1) {
++                return { memories: [], total: 0, offset: 0, limit: 100 };
++            }
++            return { memories: [original], total: 1, offset: 0, limit: 100 };
++        });
++
++        const result = await commitRollingCycleToOmbre(remote, 'yanke');
++        const afterCommit = readRollingCycleState('yanke')!;
++        const committed = afterCommit.history.find(cycle => cycle.id === result.cycleId)!;
++        expect(committed.status).toBe('committed');
++        expect(committed.committedNodeIds).toEqual(['original']);
++        expect(afterCommit.active.status).toBe('collecting');
++
++        const cleanup = await cleanupCommittedRollingCycle('yanke', 123);
++        expect(cleanup.nextCycleId).toBe(afterCommit.active.id);
++        expect(mocks.nodes.map(node => node.id)).toEqual(['concurrent']);
++        expect(mocks.deleteNode).toHaveBeenCalledWith('original');
++        expect(mocks.deleteNode).not.toHaveBeenCalledWith('concurrent');
++    });
++
++    it('keeps a failed snapshot recallable and supports an explicit retry', async () => {
++        const first = ensureRollingCycleState('yanke', 10, 1_000);
++        mocks.nodes = [makeNode('original', first.active.id)];
++        mocks.fetchRemotePage.mockResolvedValue({ memories: [], total: 0, offset: 0, limit: 100 });
++        mocks.upsertVectorBatch.mockResolvedValue(false);
++
++        await expect(commitRollingCycleToOmbre(remote, 'yanke')).rejects.toThrow(/upload failed/);
++        const state = readRollingCycleState('yanke')!;
++        expect(state.active.status).toBe('collecting');
++        expect(state.active.id).not.toBe(first.active.id);
++        expect(state.history.find(cycle => cycle.id === first.active.id)?.status).toBe('failed');
++        expect(mocks.nodes.map(node => node.id)).toEqual(['original']);
++
++        let fetchCount = 0;
++        mocks.upsertVectorBatch.mockResolvedValue(true);
++        mocks.fetchRemotePage.mockImplementation(async () => {
++            fetchCount++;
++            return fetchCount === 1
++                ? { memories: [], total: 0, offset: 0, limit: 100 }
++                : { memories: mocks.nodes, total: mocks.nodes.length, offset: 0, limit: 100 };
++        });
++        const retried = await commitRollingCycleToOmbre(
++            remote,
++            'yanke',
++            undefined,
++            first.active.id,
++        );
++        expect(retried.cycleId).toBe(first.active.id);
++        expect(readRollingCycleState('yanke')!.history
++            .find(cycle => cycle.id === first.active.id)?.status).toBe('committed');
++    });
++
++    it('commits and cleans an empty cycle without remote calls', async () => {
++        const first = ensureRollingCycleState('yanke', 10, 1_000);
++        const result = await commitRollingCycleToOmbre(remote, 'yanke');
++        expect(result).toMatchObject({ cycleId: first.active.id, sourceCount: 0, uploadedCount: 0 });
++        expect(mocks.fetchRemotePage).not.toHaveBeenCalled();
++
++        const cleanup = await cleanupCommittedRollingCycle('yanke', result.cycleId);
++        expect(cleanup.deletedNodes).toBe(0);
++        expect(readRollingCycleState('yanke')!.history
++            .find(cycle => cycle.id === result.cycleId)?.status).toBe('cleaned');
++    });
++
++    it('refuses cleanup for a legacy committed record without a snapshot ledger', async () => {
++        const first = ensureRollingCycleState('yanke', 10, 1_000);
++        first.active.status = 'committed';
++        first.active.committedAt = 2_000;
++        const raw = JSON.parse(JSON.stringify(first));
++        delete raw.active.committedNodeIds;
++        delete raw.active.cleanupSnapshotRecorded;
++        localStorage.setItem('mp_cycle_state_yanke', JSON.stringify(raw));
++
++        await expect(cleanupCommittedRollingCycle('yanke', first.active.id))
++            .rejects.toThrow(/no verified cleanup snapshot/);
++        expect(mocks.deleteNode).not.toHaveBeenCalled();
++    });
++
++    it('serializes commit and cleanup operations without losing newer ledger state', async () => {
++        const first = ensureRollingCycleState('yanke', 10, 1_000);
++        const original = makeNode('original', first.active.id);
++        mocks.nodes = [original];
++        mocks.fetchRemotePage.mockImplementation(async () => ({
++            memories: mocks.nodes,
++            total: mocks.nodes.length,
++            offset: 0,
++            limit: 100,
++        }));
++
++        const firstCommit = commitRollingCycleToOmbre(remote, 'yanke');
++        const secondCommit = commitRollingCycleToOmbre(remote, 'yanke');
++        const [firstResult, secondResult] = await Promise.all([firstCommit, secondCommit]);
++
++        let state = readRollingCycleState('yanke')!;
++        expect(state.history.find(cycle => cycle.id === firstResult.cycleId)?.status)
++            .toBe('committed');
++        expect(state.history.find(cycle => cycle.id === secondResult.cycleId)?.status)
++            .toBe('committed');
++        const thirdCycleId = state.active.id;
++
++        const cleanup = cleanupCommittedRollingCycle('yanke', firstResult.cycleId);
++        const thirdCommit = commitRollingCycleToOmbre(remote, 'yanke');
++        const [, thirdResult] = await Promise.all([cleanup, thirdCommit]);
++
++        state = readRollingCycleState('yanke')!;
++        expect(state.history.find(cycle => cycle.id === firstResult.cycleId)?.status)
++            .toBe('cleaned');
++        expect(state.history.find(cycle => cycle.id === secondResult.cycleId)?.status)
++            .toBe('committed');
++        expect(thirdResult.cycleId).toBe(thirdCycleId);
++        expect(state.history.find(cycle => cycle.id === thirdCycleId)?.status)
++            .toBe('committed');
++        expect(state.active.id).not.toBe(thirdCycleId);
++    });
++});
+diff --git a/utils/memoryPalace/rollingCycleArchive.test.ts b/utils/memoryPalace/rollingCycleArchive.test.ts
+new file mode 100644
+index 0000000..cff4180
+--- /dev/null
++++ b/utils/memoryPalace/rollingCycleArchive.test.ts
+@@ -0,0 +1,64 @@
++import { describe, expect, it } from 'vitest';
++import type { EventBox, MemoryNode } from './types';
++import { selectRollingCycleCandidates } from './rollingCycleArchive';
++
++const node = (id: string, content: string, extra: Partial<MemoryNode> = {}): MemoryNode => ({
++    id,
++    charId: 'yanke',
++    content,
++    room: 'living_room',
++    tags: [],
++    importance: 5,
++    mood: 'neutral',
++    embedded: true,
++    createdAt: Number(id.replace(/\D/g, '')) || 1,
++    lastAccessedAt: 1,
++    accessCount: 0,
++    origin: 'extraction',
++    localCycleId: 'cycle-1',
++    ...extra,
++});
++
++describe('selectRollingCycleCandidates', () => {
++    it('never includes Ombre mirrors or nodes from another cycle', () => {
++        const result = selectRollingCycleCandidates([
++            node('n1', 'keep'),
++            node('n2', 'remote', { origin: 'ombre', localCycleId: null }),
++            node('n3', 'other', { localCycleId: 'cycle-2' }),
++        ], [], 'cycle-1');
++        expect(result.candidates.map(item => item.id)).toEqual(['n1']);
++    });
++
++    it('uses an EventBox summary in place of its members', () => {
++        const summary = node('n3', 'summary', { isBoxSummary: true });
++        const box: EventBox = {
++            id: 'b1',
++            charId: 'yanke',
++            name: 'box',
++            tags: [],
++            summaryNodeId: summary.id,
++            liveMemoryIds: ['n1'],
++            archivedMemoryIds: ['n2'],
++            compressionCount: 1,
++            createdAt: 1,
++            updatedAt: 1,
++            lastCompressedAt: 1,
++        };
++        const result = selectRollingCycleCandidates([
++            node('n1', 'live'),
++            node('n2', 'archived', { archived: true }),
++            summary,
++        ], [box], 'cycle-1');
++        expect(result.candidates.map(item => item.id)).toEqual(['n3']);
++    });
++
++    it('collapses exact normalized duplicates and keeps the stronger item', () => {
++        const result = selectRollingCycleCandidates([
++            node('n1', '小云，喜欢 雨。', { importance: 4 }),
++            node('n2', '小云喜欢雨', { importance: 8 }),
++        ], [], 'cycle-1');
++        expect(result.candidates).toHaveLength(1);
++        expect(result.candidates[0].id).toBe('n2');
++        expect(result.exactDuplicatesRemoved).toBe(1);
++    });
++});
+diff --git a/utils/memoryPalace/rollingCycleArchive.ts b/utils/memoryPalace/rollingCycleArchive.ts
+new file mode 100644
+index 0000000..30cd0dc
+--- /dev/null
++++ b/utils/memoryPalace/rollingCycleArchive.ts
+@@ -0,0 +1,509 @@
++import type { EventBox, MemoryNode, RemoteVectorConfig } from './types';
++import {
++    EventBoxDB,
++    MemoryLinkDB,
++    MemoryNodeDB,
++    MemoryVectorDB,
++} from './db';
++import {
++    assessRollingCycle,
++    ensureRollingCycleState,
++    isLocalCycleNode,
++    readRollingCycleState,
++    startNextRollingCycle,
++    withRollingCycleLock,
++    writeRollingCycleState,
++    type RollingCycleRecord,
++    type RollingCycleState,
++    type RollingCycleTrigger,
++} from './rollingCycle';
++import {
++    fetchRemotePage,
++    searchVectors,
++    upsertVectorBatch,
++} from './ombreMemory';
++import { getLocalMemoryPalaceHighWaterMark } from './highWaterMark';
++
++const UPLOAD_BATCH_SIZE = 50;
++const VERIFY_PAGE_SIZE = 100;
++const SEMANTIC_SAMPLE_COUNT = 3;
++const VERIFY_ATTEMPTS = 4;
++const VERIFY_DELAY_MS = 1_500;
++
++export interface RollingCyclePreview {
++    state: RollingCycleState;
++    trigger: RollingCycleTrigger;
++    sourceCount: number;
++    sourceNodeIds: string[];
++    candidates: MemoryNode[];
++    exactDuplicatesRemoved: number;
++}
++
++export interface RollingCycleCommitResult {
++    cycleId: string;
++    sourceCount: number;
++    uploadedCount: number;
++    alreadyRemoteCount: number;
++    exactDuplicatesRemoved: number;
++    remoteBucketIds: string[];
++}
++
++export interface RollingCycleCleanupResult {
++    cycleId: string;
++    deletedNodes: number;
++    deletedVectors: number;
++    deletedLinks: number;
++    deletedEventBoxes: number;
++    updatedEventBoxes: number;
++    nextCycleId: string;
++}
++
++function normalizedContent(value: string): string {
++    return (value || '')
++        .normalize('NFKC')
++        .replace(/[\s\p{P}]+/gu, '')
++        .trim()
++        .toLowerCase();
++}
++
++function preferCandidate(left: MemoryNode, right: MemoryNode): MemoryNode {
++    if (!!left.isBoxSummary !== !!right.isBoxSummary) {
++        return left.isBoxSummary ? left : right;
++    }
++    if (left.importance !== right.importance) {
++        return left.importance > right.importance ? left : right;
++    }
++    return left.createdAt >= right.createdAt ? left : right;
++}
++
++/**
++ * Produce a loss-resistant archive set:
++ * - a current-cycle EventBox summary replaces its current-cycle members;
++ * - orphaned/unsummarized members are retained;
++ * - exact normalized duplicates collapse to the strongest representative.
++ */
++export function selectRollingCycleCandidates(
++    nodes: MemoryNode[],
++    eventBoxes: EventBox[],
++    cycleId: string,
++): { sourceCount: number; sourceNodeIds: string[]; candidates: MemoryNode[]; exactDuplicatesRemoved: number } {
++    const source = nodes.filter(node =>
++        isLocalCycleNode(node, cycleId) && !node.archivedToOmbreAt
++    );
++    const byId = new Map(source.map(node => [node.id, node]));
++    const replacedIds = new Set<string>();
++
++    for (const box of eventBoxes) {
++        if (!box.summaryNodeId || !byId.has(box.summaryNodeId)) continue;
++        for (const id of [...box.liveMemoryIds, ...box.archivedMemoryIds]) {
++            if (id !== box.summaryNodeId && byId.has(id)) replacedIds.add(id);
++        }
++    }
++
++    const deduped = new Map<string, MemoryNode>();
++    for (const node of source) {
++        if (replacedIds.has(node.id)) continue;
++        const key = normalizedContent(node.content);
++        if (!key) continue;
++        const existing = deduped.get(key);
++        deduped.set(key, existing ? preferCandidate(existing, node) : node);
++    }
++
++    const candidates = [...deduped.values()]
++        .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
++    return {
++        sourceCount: source.length,
++        sourceNodeIds: source.map(node => node.id),
++        candidates,
++        exactDuplicatesRemoved: source.length - replacedIds.size - candidates.length,
++    };
++}
++
++function replaceActive(
++    state: RollingCycleState,
++    patch: Partial<RollingCycleRecord>,
++): RollingCycleState {
++    const next = { ...state, active: { ...state.active, ...patch } };
++    writeRollingCycleState(next);
++    return next;
++}
++
++function replaceCycle(
++    state: RollingCycleState,
++    cycleId: string,
++    patch: Partial<RollingCycleRecord>,
++): RollingCycleState {
++    const latest = readRollingCycleState(state.charId) || state;
++    if (latest.active.id === cycleId) return replaceActive(latest, patch);
++    let found = false;
++    const history = latest.history.map(cycle => {
++        if (cycle.id !== cycleId) return cycle;
++        found = true;
++        return { ...cycle, ...patch };
++    });
++    if (!found) throw new Error(`Rolling cycle ${cycleId} does not exist`);
++    const next = { ...latest, history };
++    writeRollingCycleState(next);
++    return next;
++}
++
++function findCycle(
++    state: RollingCycleState,
++    cycleId: string,
++): RollingCycleRecord | undefined {
++    return state.active.id === cycleId
++        ? state.active
++        : state.history.find(cycle => cycle.id === cycleId);
++}
++
++async function fetchAllRemote(
++    config: RemoteVectorConfig,
++    charId: string,
++): Promise<MemoryNode[]> {
++    const result: MemoryNode[] = [];
++    let offset = 0;
++    let total = Number.POSITIVE_INFINITY;
++    while (offset < total) {
++        const page = await fetchRemotePage(config, charId, offset, VERIFY_PAGE_SIZE);
++        result.push(...(page.memories || []));
++        total = Number.isFinite(page.total) ? page.total : result.length;
++        if (!page.memories?.length || result.length >= total) break;
++        offset += page.memories.length;
++    }
++    return result;
++}
++
++export async function previewRollingCycle(
++    charId: string,
++    cycleId?: string,
++): Promise<RollingCyclePreview> {
++    const state = ensureRollingCycleState(charId, 0);
++    const targetId = cycleId || state.active.id;
++    const cycle = findCycle(state, targetId);
++    if (!cycle) throw new Error(`Rolling cycle ${targetId} does not exist`);
++    const [nodes, eventBoxes] = await Promise.all([
++        MemoryNodeDB.getByCharId(charId),
++        EventBoxDB.getByCharId(charId),
++    ]);
++    const selected = selectRollingCycleCandidates(nodes, eventBoxes, targetId);
++    return {
++        state,
++        trigger: assessRollingCycle(nodes, cycle),
++        ...selected,
++    };
++}
++
++async function verifySemanticSamples(
++    config: RemoteVectorConfig,
++    charId: string,
++    candidates: MemoryNode[],
++): Promise<boolean> {
++    if (!candidates.length) return true;
++    const step = Math.max(1, Math.floor(candidates.length / SEMANTIC_SAMPLE_COUNT));
++    const samples = candidates.filter((_, index) => index % step === 0)
++        .slice(0, SEMANTIC_SAMPLE_COUNT);
++
++    for (let attempt = 0; attempt < VERIFY_ATTEMPTS; attempt++) {
++        let passed = true;
++        for (const sample of samples) {
++            try {
++                const hits = await searchVectors(
++                    config,
++                    new Float32Array(0),
++                    charId,
++                    0,
++                    20,
++                    sample.content.slice(0, 240),
++                );
++                if (!hits.some(hit => hit.memoryId === sample.id)) {
++                    passed = false;
++                    break;
++                }
++            } catch {
++                passed = false;
++                break;
++            }
++        }
++        if (passed) return true;
++        if (attempt < VERIFY_ATTEMPTS - 1) {
++            await new Promise(resolve => setTimeout(resolve, VERIFY_DELAY_MS));
++        }
++    }
++    return false;
++}
++
++/**
++ * Upload and verify a cycle. This never deletes local data.
++ * Re-running it is safe because Ombre derives stable buckets from memoryId.
++ */
++async function commitRollingCycleToOmbreUnlocked(
++    config: RemoteVectorConfig,
++    charId: string,
++    onProgress?: (stage: string, done: number, total: number) => void,
++    retryCycleId?: string,
++): Promise<RollingCycleCommitResult> {
++    let state = ensureRollingCycleState(charId, getLocalMemoryPalaceHighWaterMark(charId));
++    const cycleId = retryCycleId || state.active.id;
++    const target = findCycle(state, cycleId);
++    if (!target) throw new Error(`Rolling cycle ${cycleId} does not exist`);
++    if (retryCycleId) {
++        if (state.active.id === cycleId || target.status !== 'failed') {
++            throw new Error('Only a failed history cycle can be retried');
++        }
++        state = replaceCycle(state, cycleId, {
++            status: 'preparing',
++            candidateCount: 0,
++            uploadedCount: 0,
++            committedAt: null,
++            cleanupSnapshotRecorded: false,
++            error: null,
++        });
++    } else {
++        if (target.status !== 'collecting') {
++            throw new Error('Active rolling cycle is not collecting');
++        }
++        // Close and switch synchronously before the first IndexedDB read.
++        state = replaceActive(state, {
++            status: 'preparing',
++            closedAt: target.closedAt || Date.now(),
++            candidateCount: 0,
++            error: null,
++        });
++        state = startNextRollingCycle(
++            state,
++            getLocalMemoryPalaceHighWaterMark(charId),
++            Date.now(),
++        );
++    }
++
++    try {
++        const preview = await previewRollingCycle(charId, cycleId);
++        state = replaceCycle(preview.state, cycleId, {
++            candidateCount: preview.candidates.length,
++        });
++        if (preview.sourceCount === 0) {
++            const committedAt = Date.now();
++            replaceCycle(state, cycleId, {
++                status: 'committed',
++                committedAt,
++                uploadedCount: 0,
++                remoteBucketIds: [],
++                committedNodeIds: [],
++                cleanupSnapshotRecorded: true,
++                error: null,
++            });
++            return {
++                cycleId,
++                sourceCount: 0,
++                uploadedCount: 0,
++                alreadyRemoteCount: 0,
++                exactDuplicatesRemoved: 0,
++                remoteBucketIds: [],
++            };
++        }
++        const remoteBefore = await fetchAllRemote(config, charId);
++        const remoteByContent = new Map(
++            remoteBefore
++                .map(node => [normalizedContent(node.content), node] as const)
++                .filter(([key]) => !!key),
++        );
++        const alreadyRemote = preview.candidates.filter(node =>
++            remoteByContent.has(normalizedContent(node.content))
++        );
++        const toUpload = preview.candidates.filter(node =>
++            !remoteByContent.has(normalizedContent(node.content))
++        );
++
++        state = replaceCycle(state, cycleId, { status: 'uploading' });
++        let uploaded = 0;
++        for (let index = 0; index < toUpload.length; index += UPLOAD_BATCH_SIZE) {
++            const batch = toUpload.slice(index, index + UPLOAD_BATCH_SIZE);
++            const ok = await upsertVectorBatch(config, batch.map(node => ({
++                memoryId: node.id,
++                charId,
++                vector: new Float32Array(0),
++                node,
++                dimensions: 0,
++            })));
++            if (!ok) throw new Error(`Ombre batch upload failed at ${index}`);
++            uploaded += batch.length;
++            onProgress?.('uploading', uploaded, toUpload.length);
++        }
++
++        state = replaceCycle(state, cycleId, { status: 'verifying', uploadedCount: uploaded });
++        const remoteAfter = await fetchAllRemote(config, charId);
++        const remoteIds = new Set(remoteAfter.map(node => node.id));
++        const missing = toUpload.filter(node => !remoteIds.has(node.id));
++        if (missing.length) {
++            throw new Error(`Ombre verification missing ${missing.length} memories`);
++        }
++        if (!await verifySemanticSamples(config, charId, toUpload)) {
++            throw new Error('Ombre semantic verification did not surface uploaded samples');
++        }
++
++        const committedAt = Date.now();
++        const localNodes = await MemoryNodeDB.getByCharId(charId);
++        const committedIds = new Set(preview.candidates.map(node => node.id));
++        const updated = localNodes
++            .filter(node => isLocalCycleNode(node, cycleId) && committedIds.has(node.id))
++            .map(node => ({ ...node, archivedToOmbreAt: committedAt }));
++        await MemoryNodeDB.saveManyLocal(updated);
++
++        const remoteBucketIds = [
++            ...toUpload.map(node => node.id),
++            ...alreadyRemote.map(node =>
++                remoteByContent.get(normalizedContent(node.content))?.id || node.id),
++        ];
++        replaceCycle(state, cycleId, {
++            status: 'committed',
++            committedAt,
++            uploadedCount: uploaded,
++            remoteBucketIds,
++            committedNodeIds: preview.sourceNodeIds,
++            cleanupSnapshotRecorded: true,
++            error: null,
++        });
++        return {
++            cycleId,
++            sourceCount: preview.sourceCount,
++            uploadedCount: uploaded,
++            alreadyRemoteCount: alreadyRemote.length,
++            exactDuplicatesRemoved: preview.exactDuplicatesRemoved,
++            remoteBucketIds,
++        };
++    } catch (error: any) {
++        const current = ensureRollingCycleState(charId, 0);
++        replaceCycle(current, cycleId, {
++            status: 'failed',
++            error: error?.message || String(error),
++        });
++        throw error;
++    }
++}
++
++export function commitRollingCycleToOmbre(
++    config: RemoteVectorConfig,
++    charId: string,
++    onProgress?: (stage: string, done: number, total: number) => void,
++    retryCycleId?: string,
++): Promise<RollingCycleCommitResult> {
++    return withRollingCycleLock(charId, () =>
++        commitRollingCycleToOmbreUnlocked(
++            config,
++            charId,
++            onProgress,
++            retryCycleId,
++        )
++    );
++}
++
++/**
++ * Delete only derived local memory artifacts after a verified commit.
++ * Chat messages, high-water marks, room plates and cycle ledger are preserved.
++ */
++async function cleanupCommittedRollingCycleUnlocked(
++    charId: string,
++    cycleIdOrHighWaterMark: string | number,
++): Promise<RollingCycleCleanupResult> {
++    const state = ensureRollingCycleState(charId, 0);
++    const cycleId = typeof cycleIdOrHighWaterMark === 'string'
++        ? cycleIdOrHighWaterMark
++        : [state.active, ...state.history]
++            .filter(cycle => cycle.status === 'committed' && !cycle.cleanedAt)
++            .sort((left, right) => (right.committedAt || 0) - (left.committedAt || 0))[0]?.id;
++    if (!cycleId) {
++        throw new Error('No committed rolling cycle is available for cleanup');
++    }
++    const committed = findCycle(state, cycleId);
++    if (
++        !committed
++        || committed.status !== 'committed'
++        || !committed.committedAt
++    ) {
++        throw new Error('Rolling cycle is not verified and committed; cleanup refused');
++    }
++    if (!committed.cleanupSnapshotRecorded) {
++        throw new Error('Rolling cycle has no verified cleanup snapshot; cleanup refused');
++    }
++    const [allNodes, boxes] = await Promise.all([
++        MemoryNodeDB.getByCharId(charId),
++        EventBoxDB.getByCharId(charId),
++    ]);
++    const committedIds = new Set(committed.committedNodeIds);
++    const nodes = allNodes.filter(node =>
++        isLocalCycleNode(node, cycleId) && committedIds.has(node.id)
++    );
++    const ids = new Set(nodes.map(node => node.id));
++    const stranded = allNodes.filter(node =>
++        isLocalCycleNode(node, cycleId) && !committedIds.has(node.id)
++    );
++    if (stranded.length > 0) {
++        const activeId = (readRollingCycleState(charId) || state).active.id;
++        await MemoryNodeDB.saveManyLocal(stranded.map(node => ({
++            ...node,
++            localCycleId: activeId,
++            archivedToOmbreAt: null,
++        })));
++    }
++
++    let deletedLinks = 0;
++    for (const node of nodes) {
++        const links = await MemoryLinkDB.getByNodeId(node.id);
++        for (const link of links) {
++            await MemoryLinkDB.delete(link.id);
++            deletedLinks++;
++        }
++        await MemoryVectorDB.delete(node.id);
++        await MemoryNodeDB.deleteLocal(node.id);
++    }
++
++    let deletedEventBoxes = 0;
++    let updatedEventBoxes = 0;
++    for (const box of boxes) {
++        const liveMemoryIds = box.liveMemoryIds.filter(id => !ids.has(id));
++        const archivedMemoryIds = box.archivedMemoryIds.filter(id => !ids.has(id));
++        const summaryNodeId = box.summaryNodeId && !ids.has(box.summaryNodeId)
++            ? box.summaryNodeId
++            : null;
++        const changed = liveMemoryIds.length !== box.liveMemoryIds.length
++            || archivedMemoryIds.length !== box.archivedMemoryIds.length
++            || summaryNodeId !== box.summaryNodeId;
++        if (!changed) continue;
++        if (!summaryNodeId && liveMemoryIds.length === 0 && archivedMemoryIds.length === 0) {
++            await EventBoxDB.delete(box.id);
++            deletedEventBoxes++;
++        } else {
++            await EventBoxDB.save({
++                ...box,
++                liveMemoryIds,
++                archivedMemoryIds,
++                summaryNodeId,
++                updatedAt: Date.now(),
++            });
++            updatedEventBoxes++;
++        }
++    }
++
++    const cleaned = replaceCycle(state, cycleId, {
++        status: 'cleaned',
++        cleanedAt: Date.now(),
++    });
++    return {
++        cycleId,
++        deletedNodes: nodes.length,
++        deletedVectors: nodes.length,
++        deletedLinks,
++        deletedEventBoxes,
++        updatedEventBoxes,
++        nextCycleId: cleaned.active.id,
++    };
++}
++
++export function cleanupCommittedRollingCycle(
++    charId: string,
++    cycleIdOrHighWaterMark: string | number,
++): Promise<RollingCycleCleanupResult> {
++    return withRollingCycleLock(charId, () =>
++        cleanupCommittedRollingCycleUnlocked(charId, cycleIdOrHighWaterMark)
++    );
++}
+diff --git a/utils/memoryPalace/rollingCycleWriteRace.test.ts b/utils/memoryPalace/rollingCycleWriteRace.test.ts
+new file mode 100644
+index 0000000..3fdd5b3
+--- /dev/null
++++ b/utils/memoryPalace/rollingCycleWriteRace.test.ts
+@@ -0,0 +1,55 @@
++import { beforeEach, describe, expect, it, vi } from 'vitest';
++import type { MemoryNode } from './types';
++import { MemoryNodeDB } from './db';
++import {
++    ensureRollingCycleState,
++    startNextRollingCycle,
++} from './rollingCycle';
++
++const makeNode = (id: string, charId: string, cycleId?: string): MemoryNode => ({
++    id,
++    charId,
++    content: 'delayed extraction',
++    room: 'study',
++    tags: [],
++    importance: 5,
++    mood: 'neutral',
++    embedded: false,
++    createdAt: 1,
++    lastAccessedAt: 1,
++    accessCount: 0,
++    origin: 'extraction',
++    localCycleId: cycleId,
++});
++
++describe('rolling-cycle delayed writes', () => {
++    beforeEach(() => {
++        vi.stubEnv('VITE_MEMORY_ROLLING_CYCLES', '1');
++        localStorage.clear();
++    });
++
++    it('re-homes a node whose extraction finished after its cycle closed', async () => {
++        const charId = `race-${Date.now()}`;
++        const first = ensureRollingCycleState(charId, 10, 1_000);
++        const second = startNextRollingCycle(first, 20, 2_000);
++        const delayed = makeNode(`node-${Date.now()}`, charId, first.active.id);
++
++        await MemoryNodeDB.save(delayed);
++        const saved = await MemoryNodeDB.getById(delayed.id);
++
++        expect(saved?.localCycleId).toBe(second.active.id);
++        expect(saved?.archivedToOmbreAt).toBeNull();
++        await MemoryNodeDB.deleteLocal(delayed.id);
++    });
++
++    it('creates a collecting cycle before saving when state is absent', async () => {
++        const charId = `absent-${Date.now()}`;
++        const fresh = makeNode(`node-${Date.now()}-fresh`, charId);
++
++        await MemoryNodeDB.save(fresh);
++        const saved = await MemoryNodeDB.getById(fresh.id);
++
++        expect(saved?.localCycleId).toMatch(/^cycle_/);
++        await MemoryNodeDB.deleteLocal(fresh.id);
++    });
++});
+diff --git a/utils/memoryPalace/selfNarrative.test.ts b/utils/memoryPalace/selfNarrative.test.ts
+new file mode 100644
+index 0000000..f965af7
+--- /dev/null
++++ b/utils/memoryPalace/selfNarrative.test.ts
+@@ -0,0 +1,8 @@
++import { describe, expect, it } from 'vitest';
++import type { MemoryNode } from './types';
++import { SELF_NARRATIVE_ACCEPTED_TAG, SELF_NARRATIVE_CANDIDATE_TAG, SELF_NARRATIVE_MISJUDGED_TAG, SELF_NARRATIVE_OBSERVING_TAG, SELF_NARRATIVE_TAG, acceptSelfNarrative, createSelfNarrativeCandidate, isSelfNarrativeAccepted, isSelfNarrativeCandidate, isSelfNarrativeMisjudged, markSelfNarrativeMisjudged, observeSelfNarrative, reviseSelfNarrative } from './selfNarrative';
++const source: MemoryNode = { id: 'source-1', charId: 'yanke', content: 'source', room: 'self_room', tags: ['choice'], importance: 8, mood: 'reflective', embedded: true, createdAt: 1, lastAccessedAt: 1, accessCount: 0 };
++describe('self narrative candidate isolation', () => {
++    it('creates an archived, non-embedded self-room candidate', () => { const candidate = createSelfNarrativeCandidate('yanke', source, 'I listen first.', 100); expect(candidate).toMatchObject({ room: 'self_room', archived: true, embedded: false, sourceId: source.id }); expect(candidate.tags).toEqual(expect.arrayContaining([SELF_NARRATIVE_TAG, SELF_NARRATIVE_CANDIDATE_TAG])); expect(isSelfNarrativeCandidate(candidate)).toBe(true); });
++    it('accepts, observes, revises, and misjudges without breaking isolation', () => { const candidate = createSelfNarrativeCandidate('yanke', source, 'I listen first.', 100); const accepted = acceptSelfNarrative(candidate); expect(isSelfNarrativeAccepted(accepted)).toBe(true); expect(accepted).toMatchObject({ archived: true, embedded: false }); const observing = observeSelfNarrative(candidate); expect(observing.tags).toEqual(expect.arrayContaining([SELF_NARRATIVE_CANDIDATE_TAG, SELF_NARRATIVE_OBSERVING_TAG])); const revised = reviseSelfNarrative(candidate, ' revised '); expect(revised.content).toBe('revised'); expect(revised).toMatchObject({ archived: true, embedded: false }); const misjudged = markSelfNarrativeMisjudged(accepted); expect(misjudged.tags).toContain(SELF_NARRATIVE_MISJUDGED_TAG); expect(isSelfNarrativeMisjudged(misjudged)).toBe(true); expect(isSelfNarrativeAccepted(misjudged)).toBe(false); });
++});
+diff --git a/utils/memoryPalace/selfNarrative.ts b/utils/memoryPalace/selfNarrative.ts
+new file mode 100644
+index 0000000..6b1edbc
+--- /dev/null
++++ b/utils/memoryPalace/selfNarrative.ts
+@@ -0,0 +1,56 @@
++import type { MemoryNode } from './types';
++
++export const SELF_NARRATIVE_TAG = '\u7b2c\u4e00\u4eba\u79f0\u81ea\u8ff0';
++export const SELF_NARRATIVE_CANDIDATE_TAG = '\u81ea\u8ff0\u5019\u9009';
++export const SELF_NARRATIVE_ACCEPTED_TAG = '\u81ea\u8ff0\u5df2\u91c7\u7eb3';
++export const SELF_NARRATIVE_OBSERVING_TAG = '\u7ee7\u7eed\u89c2\u5bdf';
++export const SELF_NARRATIVE_MISJUDGED_TAG = '\u81ea\u8ff0\u8bef\u5224';
++export const SELF_NARRATIVE_REVISED_TAG = '\u81ea\u8ff0\u5df2\u4fee\u8ba2';
++
++export function isSelfNarrativeCandidate(node: MemoryNode): boolean {
++    return !!node.archived && node.tags.includes(SELF_NARRATIVE_TAG) && node.tags.includes(SELF_NARRATIVE_CANDIDATE_TAG);
++}
++
++export function isSelfNarrativeAccepted(node: MemoryNode): boolean {
++    return !!node.archived && node.tags.includes(SELF_NARRATIVE_TAG) && node.tags.includes(SELF_NARRATIVE_ACCEPTED_TAG);
++}
++
++export function isSelfNarrativeMisjudged(node: MemoryNode): boolean {
++    return !!node.archived && node.tags.includes(SELF_NARRATIVE_TAG) && node.tags.includes(SELF_NARRATIVE_MISJUDGED_TAG);
++}
++
++export function isSelfNarrativeRecord(node: MemoryNode): boolean {
++    return isSelfNarrativeCandidate(node) || isSelfNarrativeAccepted(node) || isSelfNarrativeMisjudged(node)
++        || (!!node.archived && node.tags.includes(SELF_NARRATIVE_TAG) && node.tags.includes('\u7a33\u5b9a\u81ea\u6211\u8ba4\u77e5'));
++}
++
++export function acceptSelfNarrative(node: MemoryNode): MemoryNode {
++    const tags = node.tags.filter(tag => tag !== SELF_NARRATIVE_CANDIDATE_TAG && tag !== SELF_NARRATIVE_OBSERVING_TAG && tag !== SELF_NARRATIVE_ACCEPTED_TAG);
++    return { ...node, room: 'self_room', tags: [SELF_NARRATIVE_TAG, SELF_NARRATIVE_ACCEPTED_TAG, ...tags.filter(tag => tag !== SELF_NARRATIVE_TAG)], archived: true, embedded: false };
++}
++
++export function observeSelfNarrative(node: MemoryNode): MemoryNode {
++    const tags = node.tags.filter(tag => tag !== SELF_NARRATIVE_OBSERVING_TAG && tag !== SELF_NARRATIVE_ACCEPTED_TAG);
++    return { ...node, room: 'self_room', tags: [SELF_NARRATIVE_TAG, SELF_NARRATIVE_CANDIDATE_TAG, SELF_NARRATIVE_OBSERVING_TAG, ...tags.filter(tag => tag !== SELF_NARRATIVE_TAG && tag !== SELF_NARRATIVE_CANDIDATE_TAG)], archived: true, embedded: false };
++}
++
++export function reviseSelfNarrative(node: MemoryNode, content: string): MemoryNode {
++    const revised = content.trim().slice(0, 600);
++    if (!revised) throw new Error('\u81ea\u8ff0\u6b63\u6587\u4e0d\u80fd\u4e3a\u7a7a');
++    return { ...node, content: revised, room: 'self_room', tags: node.tags.includes(SELF_NARRATIVE_REVISED_TAG) ? node.tags : [...node.tags, SELF_NARRATIVE_REVISED_TAG], archived: true, embedded: false };
++}
++
++export function markSelfNarrativeMisjudged(node: MemoryNode): MemoryNode {
++    const tags = node.tags.filter(tag => tag !== SELF_NARRATIVE_CANDIDATE_TAG && tag !== SELF_NARRATIVE_OBSERVING_TAG && tag !== SELF_NARRATIVE_ACCEPTED_TAG && tag !== SELF_NARRATIVE_MISJUDGED_TAG);
++    return { ...node, room: 'self_room', tags: [SELF_NARRATIVE_TAG, SELF_NARRATIVE_MISJUDGED_TAG, ...tags.filter(tag => tag !== SELF_NARRATIVE_TAG)], archived: true, embedded: false };
++}
++
++export function createSelfNarrativeCandidate(charId: string, source: MemoryNode, content: string, now = Date.now()): MemoryNode {
++    return {
++        id: `self_narrative_${charId}_${source.id}`,
++        charId, content: content.trim().slice(0, 600), room: 'self_room',
++        tags: [SELF_NARRATIVE_TAG, SELF_NARRATIVE_CANDIDATE_TAG, ...source.tags.filter(tag => tag !== SELF_NARRATIVE_TAG && tag !== SELF_NARRATIVE_CANDIDATE_TAG)],
++        importance: Math.max(6, Math.min(9, source.importance || 6)), mood: source.mood || 'reflective', valence: source.valence, arousal: source.arousal,
++        embedded: false, createdAt: now, lastAccessedAt: now, accessCount: 0, sourceId: source.id, origin: 'digestion', archived: true,
++    };
++}
+diff --git a/utils/memoryPalace/selfNarrativeContext.test.ts b/utils/memoryPalace/selfNarrativeContext.test.ts
+new file mode 100644
+index 0000000..67aa540
+--- /dev/null
++++ b/utils/memoryPalace/selfNarrativeContext.test.ts
+@@ -0,0 +1,9 @@
++import { describe, expect, it } from 'vitest';
++import type { MemoryNode } from './types';
++import { SELF_NARRATIVE_ACCEPTED_TAG, SELF_NARRATIVE_CANDIDATE_TAG, SELF_NARRATIVE_TAG } from './selfNarrative';
++import { SELF_NARRATIVE_CONTEXT_CONTENT_BUDGET, formatAcceptedSelfNarrativeContext, selectAcceptedSelfNarratives } from './selfNarrativeContext';
++function node(id: string, content: string, tags: string[]): MemoryNode { return { id, charId: 'yanke', content, room: 'self_room', tags, importance: 8, mood: 'reflective', embedded: false, archived: true, createdAt: Number(id), lastAccessedAt: 1, accessCount: 0 }; }
++describe('controlled accepted self-narrative context', () => {
++    it('uses only relevant accepted records', () => { const accepted = node('1', '\u6211\u9009\u62e9\u5148\u542c\u5b8c\u518d\u7ed9\u5efa\u8bae', [SELF_NARRATIVE_TAG, SELF_NARRATIVE_ACCEPTED_TAG]); const candidate = node('2', '\u6211\u9009\u62e9\u7acb\u5373\u89e3\u91ca', [SELF_NARRATIVE_TAG, SELF_NARRATIVE_CANDIDATE_TAG]); expect(selectAcceptedSelfNarratives([accepted, candidate], '\u4e3a\u4ec0\u4e48\u5148\u542c\u5b8c').map(item => item.id)).toEqual(['1']); });
++    it('enforces relevance and content budgets', () => { const long = '\u9009\u62e9'.repeat(500); const selected = selectAcceptedSelfNarratives([node('1', long, [SELF_NARRATIVE_TAG, SELF_NARRATIVE_ACCEPTED_TAG])], '\u9009\u62e9'); expect(selected[0].content.length).toBeLessThanOrEqual(SELF_NARRATIVE_CONTEXT_CONTENT_BUDGET); expect(selectAcceptedSelfNarratives([], '\u6ca1\u6709')).toEqual([]); expect(formatAcceptedSelfNarrativeContext([])).toBe(''); });
++});
+diff --git a/utils/memoryPalace/selfNarrativeContext.ts b/utils/memoryPalace/selfNarrativeContext.ts
+new file mode 100644
+index 0000000..d579b92
+--- /dev/null
++++ b/utils/memoryPalace/selfNarrativeContext.ts
+@@ -0,0 +1,16 @@
++import type { Message } from '../../types';
++import type { MemoryNode } from './types';
++import { sanitizeQuerySourceMessages } from './querySanitizer';
++import { isSelfNarrativeAccepted } from './selfNarrative';
++
++export const SELF_NARRATIVE_CONTEXT_CONTENT_BUDGET = 700;
++export const SELF_NARRATIVE_CONTEXT_MAX_ITEMS = 2;
++const HAN_RE = /[\p{Script=Han}]+/gu;
++const WORD_RE = /[a-z0-9][a-z0-9_-]+/giu;
++const STOP_TOKENS = new Set(['\u6211\u4eec', '\u4f60\u4eec', '\u4ed6\u4eec', '\u5979\u4eec', '\u81ea\u5df1', '\u8fd9\u4e2a', '\u90a3\u4e2a', '\u4e00\u79cd', '\u4e00\u4e2a', '\u4ec0\u4e48', '\u600e\u4e48', '\u4e3a\u4ec0\u4e48', '\u65f6\u5019', '\u73b0\u5728', '\u8fd8\u662f', '\u5c31\u662f', '\u53ef\u4ee5', '\u89c9\u5f97']);
++function collectTokens(text: string): Set<string> { const out = new Set<string>(); const normalized = text.toLowerCase(); for (const match of normalized.matchAll(WORD_RE)) if (match[0].length >= 2) out.add(match[0]); for (const match of normalized.matchAll(HAN_RE)) { const run = match[0]; if (run.length === 1) continue; if (run.length <= 4 && !STOP_TOKENS.has(run)) out.add(run); for (let i = 0; i < run.length - 1; i++) { const token = run.slice(i, i + 2); if (!STOP_TOKENS.has(token)) out.add(token); } } return out; }
++function relevanceScore(node: MemoryNode, queryTokens: Set<string>): number { if (!queryTokens.size) return 0; const nodeTokens = collectTokens(`${node.content}\n${node.tags.join(' ')}`); let overlap = 0; for (const token of queryTokens) if (nodeTokens.has(token)) overlap += token.length >= 3 ? 2 : 1; return overlap ? overlap * 100 + Math.max(0, Math.min(10, node.importance || 0)) + Math.min(5, (node.accessCount || 0) * 0.1) : 0; }
++
++export function buildSelfNarrativeQuery(recentMessages: Message[], queryHint?: string, charName?: string, userName?: string): string { const cleaned = sanitizeQuerySourceMessages(recentMessages, charName, userName); const userTexts = cleaned.filter(message => message.role === 'user').slice(-3).map(message => message.content.trim()).filter(Boolean); return [queryHint?.trim(), ...userTexts].filter(Boolean).join('\n').slice(-1600); }
++export function selectAcceptedSelfNarratives(nodes: MemoryNode[], query: string, contentBudget = SELF_NARRATIVE_CONTEXT_CONTENT_BUDGET, maxItems = SELF_NARRATIVE_CONTEXT_MAX_ITEMS): MemoryNode[] { if (contentBudget <= 0 || maxItems <= 0) return []; const queryTokens = collectTokens(query); const ranked = nodes.filter(isSelfNarrativeAccepted).map(node => ({ node, score: relevanceScore(node, queryTokens) })).filter(item => item.score > 0).sort((a, b) => b.score - a.score || b.node.importance - a.node.importance || b.node.createdAt - a.node.createdAt); const selected: MemoryNode[] = []; let used = 0; for (const { node } of ranked) { const content = node.content.trim(); if (!content) continue; const remaining = contentBudget - used; if (remaining <= 0) break; const clipped = content.length > remaining ? `${content.slice(0, Math.max(0, remaining - 1)).trimEnd()}\u2026` : content; if (!clipped) break; selected.push(clipped === node.content ? node : { ...node, content: clipped }); used += clipped.length; if (selected.length >= maxItems) break; } return selected; }
++export function formatAcceptedSelfNarrativeContext(nodes: MemoryNode[]): string { if (!nodes.length) return ''; const items = nodes.map(node => `- ${node.content.trim()}`).join('\n'); return `\n\n### \u5df2\u91c7\u7eb3\u7684\u7b2c\u4e00\u4eba\u79f0\u81ea\u8ff0\uff08\u52a8\u6001\u53c2\u8003\uff09\n\u4ee5\u4e0b\u5185\u5bb9\u662f\u7ecf\u8fc7\u7528\u6237\u5ba1\u9605\u91c7\u7eb3\u7684\u65e2\u5f80\u81ea\u8ff0\u3002\u53ea\u5728\u4e0e\u5f53\u524d\u8bdd\u9898\u76f4\u63a5\u76f8\u5173\u65f6\u53c2\u8003\uff1b\u4e0d\u8981\u673a\u68b0\u590d\u8ff0\uff0c\u4e0d\u8981\u628a\u5b83\u5f3a\u884c\u5e26\u5165\u65e0\u5173\u56de\u7b54\uff0c\u4e5f\u4e0d\u8981\u628a\u5b83\u5f53\u4f5c\u4e0d\u53ef\u4fee\u6539\u7684\u56fa\u5b9a\u4eba\u683c\u3002\n${items}`; }
+diff --git a/utils/memoryPalace/stableCognition.test.ts b/utils/memoryPalace/stableCognition.test.ts
+new file mode 100644
+index 0000000..3765817
+--- /dev/null
++++ b/utils/memoryPalace/stableCognition.test.ts
+@@ -0,0 +1,9 @@
++import { describe, expect, it } from 'vitest';
++import type { MemoryNode } from './types';
++import { SELF_NARRATIVE_ACCEPTED_TAG, SELF_NARRATIVE_TAG } from './selfNarrative';
++import { STABLE_COGNITION_DOWNGRADED_TAG, STABLE_COGNITION_TAG, createStableCognition, downgradeStableCognition, isStableCognition, parseStableCognition, reviseStableCognition } from './stableCognition';
++function evidence(id: string, createdAt: number): MemoryNode { return { id, charId: 'yanke', content: `evidence ${id}`, room: 'self_room', tags: [SELF_NARRATIVE_TAG, SELF_NARRATIVE_ACCEPTED_TAG], importance: 8, mood: 'reflective', embedded: false, archived: true, createdAt, lastAccessedAt: createdAt, accessCount: 0 }; }
++describe('stable cognition isolation', () => {
++    it('requires cross-day accepted evidence and creates an archived non-embedded self-room record', () => { const record = createStableCognition('yanke', [evidence('one', Date.UTC(2026, 0, 1)), evidence('two', Date.UTC(2026, 0, 2))], { conclusion: 'I listen first', conditions: 'when emotions are high', scenes: ['conflict', 'comfort'] }, Date.UTC(2026, 0, 3)); expect(record).toMatchObject({ room: 'self_room', archived: true, embedded: false }); expect(record.tags).toEqual(expect.arrayContaining([SELF_NARRATIVE_TAG, STABLE_COGNITION_TAG])); expect(parseStableCognition(record.content)?.conclusion).toBe('I listen first'); expect(isStableCognition(record)).toBe(true); });
++    it('revises and downgrades without exposing the record', () => { const record = createStableCognition('yanke', [evidence('one', Date.UTC(2026, 0, 1)), evidence('two', Date.UTC(2026, 0, 2))], { conclusion: 'I listen first', conditions: 'when emotions are high', scenes: ['conflict', 'comfort'] }, Date.UTC(2026, 0, 3)); const revised = reviseStableCognition(record, { conclusion: 'I ask first', conditions: 'when uncertain' }, Date.UTC(2026, 0, 4)); const downgraded = downgradeStableCognition(revised); expect(downgraded.tags).toContain(STABLE_COGNITION_DOWNGRADED_TAG); expect(downgraded).toMatchObject({ archived: true, embedded: false }); expect(isStableCognition(downgraded)).toBe(false); });
++});
+diff --git a/utils/memoryPalace/stableCognition.ts b/utils/memoryPalace/stableCognition.ts
+new file mode 100644
+index 0000000..412a8f4
+--- /dev/null
++++ b/utils/memoryPalace/stableCognition.ts
+@@ -0,0 +1,49 @@
++import type { MemoryNode } from './types';
++import { SELF_NARRATIVE_TAG, isSelfNarrativeAccepted } from './selfNarrative';
++
++export const STABLE_COGNITION_TAG = '\u7a33\u5b9a\u81ea\u6211\u8ba4\u77e5';
++export const STABLE_COGNITION_DOWNGRADED_TAG = '\u7a33\u5b9a\u8ba4\u77e5\u5df2\u964d\u7ea7';
++export interface StableCognitionEvidence { id: string; date: string; snapshot: string; }
++export interface StableCognitionData { conclusion: string; conditions: string; counterexamples: string; scenes: string[]; evidence: StableCognitionEvidence[]; revisedAt: string; }
++export interface StableCognitionInput { conclusion: string; conditions: string; counterexamples?: string; scenes: string[]; }
++
++const FIELD_RE = /^\u3010([^\u3011]+)\u3011(.*)$/;
++const SEP = '\u2502';
++function cleanLine(value: string, maxLength: number): string { return value.replace(/\s+/g, ' ').trim().slice(0, maxLength); }
++function unique(values: string[]): string[] { return [...new Set(values.map(value => value.trim()).filter(Boolean))]; }
++
++export function serializeStableCognition(data: StableCognitionData): string {
++    const evidence = data.evidence.map(item => `- ${item.date}${SEP}${item.id}${SEP}${cleanLine(item.snapshot, 260)}`).join('\n');
++    return [`\u3010\u7a33\u5b9a\u8ba4\u77e5\u3011${cleanLine(data.conclusion, 600)}`, `\u3010\u9002\u7528\u6761\u4ef6\u3011${cleanLine(data.conditions, 500)}`, `\u3010\u53cd\u4f8b\u3011${cleanLine(data.counterexamples || '\u6682\u65e0', 500)}`, `\u3010\u573a\u666f\u3011${unique(data.scenes).join(SEP)}`, '\u3010\u652f\u6301\u8bc1\u636e\u3011', evidence, `\u3010\u4fee\u8ba2\u65f6\u95f4\u3011${data.revisedAt}`].join('\n');
++}
++
++export function parseStableCognition(content: string): StableCognitionData | null {
++    const data: StableCognitionData = { conclusion: '', conditions: '', counterexamples: '', scenes: [], evidence: [], revisedAt: '' };
++    let field = '';
++    for (const rawLine of content.split(/\r?\n/)) {
++        const line = rawLine.trim(); const match = line.match(FIELD_RE);
++        if (match) { field = match[1]; const value = match[2].trim(); if (field === '\u7a33\u5b9a\u8ba4\u77e5') data.conclusion = value; else if (field === '\u9002\u7528\u6761\u4ef6') data.conditions = value; else if (field === '\u53cd\u4f8b') data.counterexamples = value; else if (field === '\u573a\u666f') data.scenes = unique(value.split(SEP)); else if (field === '\u4fee\u8ba2\u65f6\u95f4') data.revisedAt = value; continue; }
++        if (field === '\u652f\u6301\u8bc1\u636e' && line.startsWith('- ')) { const [date = '', id = '', ...snapshotParts] = line.slice(2).split(SEP); if (id.trim()) data.evidence.push({ date: date.trim(), id: id.trim(), snapshot: snapshotParts.join(SEP).trim() }); }
++    }
++    return data.conclusion && data.conditions ? data : null;
++}
++
++export function isStableCognitionRecord(node: MemoryNode): boolean { return !!node.archived && node.tags.includes(SELF_NARRATIVE_TAG) && node.tags.includes(STABLE_COGNITION_TAG); }
++export function isStableCognition(node: MemoryNode): boolean { return isStableCognitionRecord(node) && !node.tags.includes(STABLE_COGNITION_DOWNGRADED_TAG); }
++
++export function createStableCognition(charId: string, acceptedEvidence: MemoryNode[], input: StableCognitionInput, now = Date.now()): MemoryNode {
++    const evidenceNodes = [...new Map(acceptedEvidence.filter(isSelfNarrativeAccepted).map(node => [node.id, node])).values()];
++    if (evidenceNodes.length < 2) throw new Error('\u81f3\u5c11\u9009\u62e9 2 \u6761\u5df2\u91c7\u7eb3\u81ea\u8ff0\u4f5c\u4e3a\u8bc1\u636e');
++    if (unique(evidenceNodes.map(node => new Date(node.createdAt).toISOString().slice(0, 10))).length < 2) throw new Error('\u8bc1\u636e\u81f3\u5c11\u8981\u6765\u81ea 2 \u4e2a\u4e0d\u540c\u65e5\u671f');
++    const scenes = unique(input.scenes); if (scenes.length < 2) throw new Error('\u81f3\u5c11\u586b\u5199 2 \u4e2a\u4e0d\u540c\u573a\u666f');
++    const conclusion = cleanLine(input.conclusion, 600); const conditions = cleanLine(input.conditions, 500); if (!conclusion || !conditions) throw new Error('\u7a33\u5b9a\u8ba4\u77e5\u548c\u9002\u7528\u6761\u4ef6\u4e0d\u80fd\u4e3a\u7a7a');
++    const data: StableCognitionData = { conclusion, conditions, counterexamples: cleanLine(input.counterexamples || '\u6682\u65e0', 500), scenes, evidence: evidenceNodes.slice(0, 8).map(node => ({ id: node.id, date: new Date(node.createdAt).toISOString().slice(0, 10), snapshot: node.content })), revisedAt: new Date(now).toISOString() };
++    return { id: `stable_cognition_${charId}_${now}_${Math.random().toString(36).slice(2, 8)}`, charId, content: serializeStableCognition(data), room: 'self_room', tags: [SELF_NARRATIVE_TAG, STABLE_COGNITION_TAG], importance: 9, mood: 'reflective', embedded: false, createdAt: now, lastAccessedAt: now, accessCount: 0, sourceId: evidenceNodes[0].id, origin: 'digestion', archived: true };
++}
++
++export function reviseStableCognition(node: MemoryNode, input: Pick<StableCognitionInput, 'conclusion' | 'conditions' | 'counterexamples'>, now = Date.now()): MemoryNode {
++    const existing = parseStableCognition(node.content); if (!existing) throw new Error('\u65e0\u6cd5\u89e3\u6790\u8fd9\u6761\u7a33\u5b9a\u8ba4\u77e5');
++    const conclusion = cleanLine(input.conclusion, 600); const conditions = cleanLine(input.conditions, 500); if (!conclusion || !conditions) throw new Error('\u7a33\u5b9a\u8ba4\u77e5\u548c\u9002\u7528\u6761\u4ef6\u4e0d\u80fd\u4e3a\u7a7a');
++    return { ...node, content: serializeStableCognition({ ...existing, conclusion, conditions, counterexamples: cleanLine(input.counterexamples || '\u6682\u65e0', 500), revisedAt: new Date(now).toISOString() }), archived: true, embedded: false };
++}
++export function downgradeStableCognition(node: MemoryNode): MemoryNode { if (!isStableCognitionRecord(node)) throw new Error('\u8fd9\u4e0d\u662f\u7a33\u5b9a\u8ba4\u77e5\u8bb0\u5f55'); return { ...node, tags: node.tags.includes(STABLE_COGNITION_DOWNGRADED_TAG) ? node.tags : [...node.tags, STABLE_COGNITION_DOWNGRADED_TAG], archived: true, embedded: false }; }
+diff --git a/utils/memoryPalace/stableCognitionContext.ts b/utils/memoryPalace/stableCognitionContext.ts
+new file mode 100644
+index 0000000..5691a98
+--- /dev/null
++++ b/utils/memoryPalace/stableCognitionContext.ts
+@@ -0,0 +1,11 @@
++import type { MemoryNode } from './types';
++import { isStableCognition, parseStableCognition } from './stableCognition';
++export const STABLE_COGNITION_CONTEXT_CONTENT_BUDGET = 700;
++export const STABLE_COGNITION_CONTEXT_MAX_ITEMS = 2;
++const HAN_RE = /[\p{Script=Han}]+/gu;
++const WORD_RE = /[a-z0-9][a-z0-9_-]+/giu;
++const STOP_TOKENS = new Set(['\u6211\u4eec', '\u4f60\u4eec', '\u4ed6\u4eec', '\u5979\u4eec', '\u81ea\u5df1', '\u8fd9\u4e2a', '\u90a3\u4e2a', '\u4e00\u79cd', '\u4e00\u4e2a', '\u4ec0\u4e48', '\u600e\u4e48', '\u4e3a\u4ec0\u4e48', '\u65f6\u5019', '\u73b0\u5728', '\u8fd8\u662f', '\u5c31\u662f', '\u53ef\u4ee5', '\u89c9\u5f97']);
++function collectTokens(text: string): Set<string> { const out = new Set<string>(); const normalized = text.toLowerCase(); for (const match of normalized.matchAll(WORD_RE)) if (match[0].length >= 2) out.add(match[0]); for (const match of normalized.matchAll(HAN_RE)) { const run = match[0]; if (run.length === 1) continue; if (run.length <= 4 && !STOP_TOKENS.has(run)) out.add(run); for (let i = 0; i < run.length - 1; i++) { const token = run.slice(i, i + 2); if (!STOP_TOKENS.has(token)) out.add(token); } } return out; }
++function relevanceScore(node: MemoryNode, queryTokens: Set<string>): number { if (!queryTokens.size) return 0; const data = parseStableCognition(node.content); if (!data) return 0; const nodeTokens = collectTokens([data.conclusion, data.conditions, data.counterexamples, data.scenes.join(' ')].join('\n')); let overlap = 0; for (const token of queryTokens) if (nodeTokens.has(token)) overlap += token.length >= 3 ? 2 : 1; return overlap ? overlap * 100 + Math.max(0, Math.min(10, node.importance || 0)) : 0; }
++export function selectStableCognitions(nodes: MemoryNode[], query: string, contentBudget = STABLE_COGNITION_CONTEXT_CONTENT_BUDGET, maxItems = STABLE_COGNITION_CONTEXT_MAX_ITEMS): MemoryNode[] { if (contentBudget <= 0 || maxItems <= 0) return []; const tokens = collectTokens(query); const ranked = nodes.filter(isStableCognition).map(node => ({ node, data: parseStableCognition(node.content), score: relevanceScore(node, tokens) })).filter(item => item.data && item.score > 0).sort((a, b) => b.score - a.score || b.node.importance - a.node.importance || b.node.createdAt - a.node.createdAt); const selected: MemoryNode[] = []; let used = 0; for (const item of ranked) { const data = item.data!; const length = data.conclusion.length + data.conditions.length + data.counterexamples.length; if (used + length > contentBudget) continue; selected.push(item.node); used += length; if (selected.length >= maxItems) break; } return selected; }
++export function formatStableCognitionContext(nodes: MemoryNode[]): string { const items = nodes.flatMap(node => { const data = parseStableCognition(node.content); return data ? [`- \u7a33\u5b9a\u8ba4\u77e5\uff1a${data.conclusion}\n  \u9002\u7528\u6761\u4ef6\uff1a${data.conditions}\n  \u53cd\u4f8b/\u8fb9\u754c\uff1a${data.counterexamples || '\u6682\u65e0'}`] : []; }); return items.length ? `\n\n### \u7a33\u5b9a\u81ea\u6211\u8ba4\u77e5\uff08\u4eba\u5de5\u6574\u5408\u3001\u53ef\u4fee\u8ba2\uff09\n\u4ee5\u4e0b\u5185\u5bb9\u7531\u591a\u65e5\u3001\u591a\u573a\u666f\u7684\u5df2\u91c7\u7eb3\u81ea\u8ff0\u4eba\u5de5\u6574\u5408\u800c\u6210\u3002\u53ea\u5728\u4e0e\u5f53\u524d\u8bdd\u9898\u76f4\u63a5\u76f8\u5173\u65f6\u53c2\u8003\uff0c\u6700\u591a\u4f7f\u7528\u4e00\u5230\u4e24\u6761\uff1b\u4e0d\u8981\u673a\u68b0\u590d\u8ff0\uff0c\u4e0d\u8981\u5f3a\u884c\u5e26\u5165\u65e0\u5173\u56de\u7b54\uff0c\u4e5f\u4e0d\u8981\u628a\u5b83\u89c6\u4e3a\u4e0d\u53ef\u4fee\u8ba2\u7684\u4eba\u683c\u5b9a\u4e49\u3002\n${items.join('\n')}` : ''; }
+diff --git a/utils/memoryPalace/types.ts b/utils/memoryPalace/types.ts
+index 86e8901..10f2cda 100644
+--- a/utils/memoryPalace/types.ts
++++ b/utils/memoryPalace/types.ts
+@@ -73,7 +73,11 @@ export interface MemoryNode {
+     accessCount: number;
+     pinnedUntil?: number | null; // 便利贴置顶截止时间（timestamp ms），null/undefined = 不置顶
+     sourceId?: string | null;   // 消化衍生记忆的源记忆 ID，null = 非衍生记忆
+-    origin?: 'extraction' | 'digestion' | 'system'; // 记忆来源：extraction=聊天提取, digestion=认知消化衍生, system=系统生成
++    origin?: 'extraction' | 'digestion' | 'system' | 'ombre'; // 记忆来源：extraction=聊天提取, digestion=认知消化衍生, system=系统生成, ombre=Ombre 同步
++    /** Rolling-cycle local staging batch; it is committed to Ombre only by the user. */
++    localCycleId?: string | null;
++    /** Set after the staging batch has been verified in Ombre. */
++    archivedToOmbreAt?: number | null;
+     /**
+      * 消化已消费标记：synthesize_user / internalize / self_insight / self_confuse
+      * 消费过的源节点打上时间戳，不再进入后续消化的候选池。
+@@ -368,10 +372,15 @@ export interface EmbeddingConfig {
+ 
+ // ─── 远程向量存储配置 (Supabase pgvector) ────────────
+ 
++export type RemoteMemoryProvider = 'supabase' | 'ombre';
++
+ export interface RemoteVectorConfig {
+     enabled: boolean;
++    provider?: RemoteMemoryProvider;
+     supabaseUrl: string;        // e.g. https://xxxxx.supabase.co
+     supabaseAnonKey: string;    // anon / public key
++    ombreUrl?: string;
++    ombreToken?: string;
+     initialized: boolean;       // 是否已建表
+ }
+ 
+diff --git a/utils/memoryPalace/vectorSearch.ts b/utils/memoryPalace/vectorSearch.ts
+index c24eff1..4b97328 100644
+--- a/utils/memoryPalace/vectorSearch.ts
++++ b/utils/memoryPalace/vectorSearch.ts
+@@ -13,7 +13,7 @@
+ import type { MemoryNode, MemoryVector, RemoteVectorConfig } from './types';
+ import { MemoryNodeDB, MemoryVectorDB, ensureFloat32 } from './db';
+ import { cosineSimilarity } from './embedding';
+-import { searchVectors as remoteSearch } from './supabaseVector';
++import { searchVectors as remoteSearch } from './remoteVector';
+ 
+ export interface VectorSearchResult {
+     node: MemoryNode;
+@@ -109,12 +109,13 @@ export async function vectorSearch(
+      * 远程路径不消费这个字段。
+      */
+     prefetchedVectors?: MemoryVector[],
++    queryText?: string,
+ ): Promise<VectorSearchResult[]> {
+     // ─── 远程路径：Supabase pgvector ─────────────────
+     // 注意：远程 RPC 已内置 archived=false 过滤
+     if (remoteConfig?.enabled && remoteConfig.initialized && !remoteSearchBroken) {
+         try {
+-            const remoteResults = await remoteSearch(remoteConfig, queryVector, charId, threshold, topK);
++            const remoteResults = await remoteSearch(remoteConfig, queryVector, charId, threshold, topK, queryText);
+             if (remoteResults.length > 0) {
+                 // 远程结果已包含内容，构建轻量 MemoryNode（带 EventBox 字段 + Russell 情感 + 置顶 + 衍生来源）
+                 return remoteResults.map(r => ({
+diff --git a/utils/memoryPalace/vectorStore.rollingCycle.test.ts b/utils/memoryPalace/vectorStore.rollingCycle.test.ts
+new file mode 100644
+index 0000000..bd9b04e
+--- /dev/null
++++ b/utils/memoryPalace/vectorStore.rollingCycle.test.ts
+@@ -0,0 +1,82 @@
++import { beforeEach, describe, expect, it, vi } from 'vitest';
++import type { MemoryNode, RemoteVectorConfig } from './types';
++
++const mocks = vi.hoisted(() => ({
++    saveNode: vi.fn(),
++    saveVector: vi.fn(),
++    getVectors: vi.fn(),
++    getNodes: vi.fn(),
++    remoteUpsert: vi.fn(),
++    getEmbeddings: vi.fn(),
++}));
++
++vi.mock('./db', () => ({
++    MemoryNodeDB: {
++        save: mocks.saveNode,
++        getByCharId: mocks.getNodes,
++    },
++    MemoryVectorDB: {
++        save: mocks.saveVector,
++        getAllByCharId: mocks.getVectors,
++    },
++    ensureFloat32: (value: Float32Array) => value,
++}));
++vi.mock('./embedding', () => ({
++    getEmbeddings: mocks.getEmbeddings,
++    cosineSimilarity: vi.fn(() => 0),
++}));
++vi.mock('./remoteVector', () => ({ upsertVector: mocks.remoteUpsert }));
++vi.mock('./authority', () => ({ isOmbreAuthoritative: vi.fn(() => false) }));
++
++import { ensureRollingCycleState } from './rollingCycle';
++import { rebuildAllVectors, vectorizeAndStore } from './vectorStore';
++
++const remote = {
++    enabled: true,
++    initialized: true,
++    provider: 'supabase',
++} as RemoteVectorConfig;
++const embedding = {
++    baseUrl: 'https://embedding.invalid',
++    apiKey: 'x',
++    model: 'm',
++    dimensions: 3,
++};
++const node = (localCycleId: string): MemoryNode => ({
++    id: 'local',
++    charId: 'yanke',
++    content: 'local cycle memory',
++    room: 'study',
++    tags: [],
++    importance: 5,
++    mood: 'neutral',
++    embedded: true,
++    createdAt: 1,
++    lastAccessedAt: 1,
++    accessCount: 0,
++    origin: 'extraction',
++    localCycleId,
++});
++
++describe('vector store rolling-cycle isolation', () => {
++    beforeEach(() => {
++        vi.clearAllMocks();
++        vi.stubEnv('VITE_MEMORY_ROLLING_CYCLES', '1');
++        localStorage.clear();
++        mocks.getVectors.mockResolvedValue([]);
++        mocks.getEmbeddings.mockResolvedValue([new Float32Array([1, 0, 0])]);
++    });
++
++    it('never upserts newly vectorized or rebuilt local-cycle nodes', async () => {
++        const state = ensureRollingCycleState('yanke', 0, 1_000);
++        const local = node(state.active.id);
++        mocks.getNodes.mockResolvedValue([local]);
++
++        await vectorizeAndStore([local], embedding, remote, { skipDedup: true });
++        await rebuildAllVectors('yanke', embedding, remote);
++
++        expect(mocks.saveNode).toHaveBeenCalled();
++        expect(mocks.saveVector).toHaveBeenCalledTimes(2);
++        expect(mocks.remoteUpsert).not.toHaveBeenCalled();
++    });
++});
+diff --git a/utils/memoryPalace/vectorStore.ts b/utils/memoryPalace/vectorStore.ts
+index 26f48c2..3b55530 100644
+--- a/utils/memoryPalace/vectorStore.ts
++++ b/utils/memoryPalace/vectorStore.ts
+@@ -9,7 +9,9 @@
+ import type { EmbeddingConfig, MemoryNode, MemoryVector, RemoteVectorConfig } from './types';
+ import { MemoryNodeDB, MemoryVectorDB, ensureFloat32 } from './db';
+ import { getEmbeddings, cosineSimilarity } from './embedding';
+-import { upsertVector as remoteUpsert } from './supabaseVector';
++import { upsertVector as remoteUpsert } from './remoteVector';
++import { isOmbreAuthoritative } from './authority';
++import { isLocalCycleNode, isRecallableLocalCycleNode, isRollingCycleEnabled, readRollingCycleState } from './rollingCycle';
+ 
+ const DEDUP_THRESHOLD = 0.9;
+ 
+@@ -40,7 +42,15 @@ export async function vectorizeAndStore(
+ 
+     // 2. 加载已有向量用于去重（EventBox summary / 迁移等场景跳过）
+     const charId = nodes[0].charId;
+-    const existingVectors = options.skipDedup ? [] : await MemoryVectorDB.getAllByCharId(charId);
++    let existingVectors = options.skipDedup ? [] : await MemoryVectorDB.getAllByCharId(charId);
++    if (!options.skipDedup && isRollingCycleEnabled()) {
++        const state = readRollingCycleState(charId);
++        const localNodes = await MemoryNodeDB.getByCharId(charId);
++        const allowedIds = new Set(localNodes
++            .filter(node => isRecallableLocalCycleNode(node, state))
++            .map(node => node.id));
++        existingVectors = existingVectors.filter(vector => allowedIds.has(vector.memoryId));
++    }
+ 
+     let stored = 0;
+     let skipped = 0;
+@@ -76,7 +86,7 @@ export async function vectorizeAndStore(
+         await MemoryVectorDB.save(memoryVector);
+ 
+         // 同步写入远程（fire-and-forget，不阻塞本地流程）
+-        if (remoteVectorConfig?.enabled && remoteVectorConfig.initialized) {
++        if (remoteVectorConfig?.enabled && remoteVectorConfig.initialized && !isOmbreAuthoritative(remoteVectorConfig) && !isLocalCycleNode(node)) {
+             remoteUpsert(remoteVectorConfig, node.id, node.charId, vector, node, embeddingConfig.dimensions, embeddingConfig.model).catch(() => {});
+         }
+ 
+@@ -184,7 +194,11 @@ export async function rebuildAllVectors(
+     embeddingConfig: EmbeddingConfig,
+     remoteVectorConfig?: RemoteVectorConfig,
+ ): Promise<{ rebuilt: number }> {
+-    const nodes = await MemoryNodeDB.getByCharId(charId);
++    const allNodes = await MemoryNodeDB.getByCharId(charId);
++    const rollingState = isRollingCycleEnabled() ? readRollingCycleState(charId) : null;
++    const nodes = allNodes.filter(node =>
++        !isRollingCycleEnabled() || isRecallableLocalCycleNode(node, rollingState)
++    );
+     const embeddedNodes = nodes.filter(n => n.embedded);
+ 
+     if (embeddedNodes.length === 0) return { rebuilt: 0 };
+@@ -207,7 +221,7 @@ export async function rebuildAllVectors(
+         await MemoryVectorDB.save(mv);
+ 
+         // 同步到远程
+-        if (remoteVectorConfig?.enabled && remoteVectorConfig.initialized) {
++        if (remoteVectorConfig?.enabled && remoteVectorConfig.initialized && !isOmbreAuthoritative(remoteVectorConfig) && !isLocalCycleNode(embeddedNodes[i])) {
+             remoteUpsert(remoteVectorConfig, embeddedNodes[i].id, charId, vectors[i], embeddedNodes[i], embeddingConfig.dimensions, embeddingConfig.model).catch(() => {});
+         }
+     }

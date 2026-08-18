@@ -1,0 +1,21 @@
+{
+  "module": "memory-ombre",
+  "formalStaticWeb": {
+    "status": "marker-confirmed",
+    "path": "/var/www/sully.release-20260813-nursery-local-tools-v1",
+    "archive": "nursery-local-tools-staging-20260813.tar.gz",
+    "sha256": "5AC00F070F48FAFFB3B938A26C5975BB92B11B0897ED2E1E72D763AF56C565B6",
+    "bundle": "assets/memory-palace-CAB2KLDe.js",
+    "markers": ["稳定认知", "稳定自我认知"]
+  },
+  "apkDebugCandidate": {
+    "status": "candidate-only",
+    "authorityDefault": "false on Web; VITE_OMBRE_AUTHORITATIVE=1 is an APK debug candidate only",
+    "released": false
+  },
+  "workers": {
+    "status": "unverified",
+    "released": false
+  },
+  "limits": "The static inspection only confirms the named strings in the named archived Web bundle. It does not prove source equivalence, route execution, APK/current-dist artifacts, workers, remote Ombre availability, or any runtime deployment."
+}

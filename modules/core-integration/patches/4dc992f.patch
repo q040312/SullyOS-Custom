@@ -1,0 +1,111 @@
+diff --git a/utils/deploymentUrls.core.test.ts b/utils/deploymentUrls.core.test.ts
+new file mode 100644
+index 0000000..c7fe131
+--- /dev/null
++++ b/utils/deploymentUrls.core.test.ts
+@@ -0,0 +1,30 @@
++import { describe, expect, it } from 'vitest';
++import { createSullyDeploymentUrlsPolicy } from './deploymentUrls';
++
++const storage = () => {
++  const values = new Map<string, string>();
++  return {
++    getItem: (key: string) => values.get(key) || null,
++    setItem: (key: string, value: string) => values.set(key, value),
++    removeItem: (key: string) => values.delete(key),
++  };
++};
++
++describe('shared deployment URL policy', () => {
++  it('keeps web services same-origin by default', () => {
++    const policy = createSullyDeploymentUrlsPolicy('');
++    expect(policy.isApkBuild).toBe(false);
++    expect(policy.memoryUrl).toBe('/sully-memory');
++    expect(policy.credentials).toBe('same-origin');
++    expect(policy.resolveOmbreMemoryUrl(' https://ombre.example/path/ ')).toBe('https://ombre.example/path');
++    expect(policy.authHeaders()).toEqual({});
++  });
++
++  it('pins APK Ombre before attaching its access token', () => {
++    const policy = createSullyDeploymentUrlsPolicy('https://owned.example/', storage());
++    policy.setToken(' private-token ');
++    expect(policy.resolveOmbreMemoryUrl('https://untrusted.example/ombre')).toBe('https://owned.example/sully-app-memory');
++    expect(policy.authHeaders()).toEqual({ Authorization: 'Bearer private-token' });
++    expect(policy.credentials).toBe('omit');
++  });
++});
+diff --git a/utils/deploymentUrls.ts b/utils/deploymentUrls.ts
+new file mode 100644
+index 0000000..0403b51
+--- /dev/null
++++ b/utils/deploymentUrls.ts
+@@ -0,0 +1,69 @@
++type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
++
++const trimTrailingSlash = (value: string): string => value.replace(/\/+$/, '');
++const APP_ACCESS_TOKEN_KEY = 'sullyos_apk_access_token_v1';
++
++const runtimeStorage = (): StorageLike | undefined => (
++  typeof localStorage === 'undefined' ? undefined : localStorage
++);
++
++/** Shared owned-service URL and APK token policy. Callers must resolve a URL
++ * before adding auth headers so APK Bearers can only target the pinned origin. */
++export const createSullyDeploymentUrlsPolicy = (origin: string, storage?: StorageLike) => {
++  const vpsOrigin = trimTrailingSlash(String(origin || '').trim());
++  const isApkBuild = vpsOrigin.length > 0;
++  const ownedServiceUrl = (browserPath: string, apkPath: string): string => (
++    !isApkBuild ? browserPath : `${vpsOrigin}${apkPath.startsWith('/') ? apkPath : `/${apkPath}`}`
++  );
++  const memoryUrl = ownedServiceUrl('/sully-memory', '/sully-app-memory');
++  const getToken = (): string => {
++    const activeStorage = storage || runtimeStorage();
++    if (!isApkBuild || !activeStorage) return '';
++    try { return String(activeStorage.getItem(APP_ACCESS_TOKEN_KEY) || '').trim(); }
++    catch { return ''; }
++  };
++
++  return {
++    vpsOrigin,
++    isApkBuild,
++    syncApiBase: ownedServiceUrl('/sully-sync/v1', '/sully-app-sync/v1'),
++    mcpUrl: ownedServiceUrl('/sully-mcp', '/sully-app-mcp'),
++    memoryUrl,
++    musicUrl: ownedServiceUrl('/sully-music', '/sully-app-music'),
++    voiceUrl: ownedServiceUrl('/sully-voice', '/sully-app-voice'),
++    isDevicePrivateStorageKey: (key: string): boolean => (
++      key === APP_ACCESS_TOKEN_KEY || key === 'sullyos_vps_sync_state_v1' || key === 'sullyos_vps_sync_dirty_v1'
++    ),
++    getToken,
++    setToken: (token: string): void => {
++      const activeStorage = storage || runtimeStorage();
++      if (!isApkBuild || !activeStorage) return;
++      const clean = String(token || '').trim();
++      try { if (clean) activeStorage.setItem(APP_ACCESS_TOKEN_KEY, clean); else activeStorage.removeItem(APP_ACCESS_TOKEN_KEY); }
++      catch { /* Storage can be unavailable in privacy mode. */ }
++    },
++    authHeaders: (): Record<string, string> => {
++      const token = getToken();
++      return token ? { Authorization: `Bearer ${token}` } : {};
++    },
++    credentials: isApkBuild ? 'omit' as RequestCredentials : 'same-origin' as RequestCredentials,
++    resolveOmbreMemoryUrl: (configured?: string): string => (
++      isApkBuild ? memoryUrl : trimTrailingSlash(String(configured || '').trim() || memoryUrl)
++    ),
++  };
++};
++
++const policy = createSullyDeploymentUrlsPolicy(String(import.meta.env.VITE_SULLY_VPS_ORIGIN || ''));
++export const SULLY_VPS_ORIGIN = policy.vpsOrigin;
++export const IS_SULLY_APK_BUILD = policy.isApkBuild;
++export const SULLY_SYNC_API_BASE = policy.syncApiBase;
++export const SULLY_MCP_URL = policy.mcpUrl;
++export const SULLY_MEMORY_URL = policy.memoryUrl;
++export const SULLY_MUSIC_URL = policy.musicUrl;
++export const SULLY_VOICE_URL = policy.voiceUrl;
++export const isSullyDevicePrivateStorageKey = policy.isDevicePrivateStorageKey;
++export const getSullyAppAccessToken = policy.getToken;
++export const setSullyAppAccessToken = policy.setToken;
++export const sullyAppAuthHeaders = policy.authHeaders;
++export const ownedServiceCredentials = policy.credentials;
++export const resolveOmbreMemoryUrl = policy.resolveOmbreMemoryUrl;

@@ -1,0 +1,13 @@
+{
+  "candidate": {
+    "baseTree": "8c3f03a2f1ad26b0b84bb614368cc0d8d453ba03",
+    "resultTree": "eea3cc83e2daa1898459b8b5045ee2a70af963f7",
+    "whitelistFiles": 12
+  },
+  "verification": {
+    "specializedTests": 21,
+    "mcpCallChainAssertions": 59,
+    "diffCheck": "passed"
+  },
+  "limits": "Evidence covers the reviewed source candidate and run-local state boundaries; it does not prove an external MCP service, Worker, APK, bundle, or production deployment."
+}

@@ -5,11 +5,78 @@
   "required": ["id", "status", "releaseBoundary", "dependsOn", "summary", "containsSecrets", "applySupported"],
   "properties": {
     "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
-    "status": { "enum": ["inventory", "ready"] },
+    "status": { "enum": ["inventory", "ready", "baseline-provided"] },
     "releaseBoundary": { "enum": ["formal", "mixed", "experimental"] },
     "dependsOn": { "type": "array", "items": { "type": "string", "pattern": "^[a-z0-9-]+$" } },
     "summary": { "type": "string", "minLength": 1 },
     "containsSecrets": { "const": false },
-    "applySupported": { "type": "boolean" }
-  }
+    "applySupported": { "type": "boolean" },
+    "install": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "base", "resultTree"],
+      "properties": {
+        "mode": { "enum": ["patch", "baseline-provided"] },
+        "patch": { "type": "string", "pattern": "^patches/[0-9a-f]{7,40}\\.patch$" },
+        "base": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "tree"],
+          "properties": {
+            "kind": { "enum": ["upstream-tree", "module-tree"] },
+            "module": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+            "tree": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+          }
+        },
+        "resultTree": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "inventory" } }, "required": ["status"] },
+      "then": {
+        "properties": { "applySupported": { "const": false } },
+        "not": { "required": ["install"] }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "baseline-provided" } }, "required": ["status"] },
+      "then": {
+        "properties": {
+          "applySupported": { "const": true },
+          "install": {
+            "required": ["mode", "base", "resultTree"],
+            "properties": {
+              "mode": { "const": "baseline-provided" },
+              "base": { "properties": { "kind": { "const": "upstream-tree" } } }
+            },
+            "not": { "required": ["patch"] }
+          }
+        },
+        "required": ["install"]
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "ready" } }, "required": ["status"] },
+      "then": {
+        "properties": {
+          "applySupported": { "const": true },
+          "install": {
+            "required": ["mode", "patch", "base", "resultTree"],
+            "properties": {
+              "mode": { "const": "patch" },
+              "base": {
+                "oneOf": [
+                  { "properties": { "kind": { "const": "upstream-tree" } } },
+                  { "properties": { "kind": { "const": "module-tree" } }, "required": ["module"] }
+                ]
+              }
+            }
+          }
+        },
+        "required": ["install"]
+      }
+    }
+  ]
 }

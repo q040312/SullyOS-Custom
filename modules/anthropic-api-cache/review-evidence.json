@@ -1,0 +1,39 @@
+{
+  "module": "anthropic-api-cache",
+  "baselineCommit": "4dc992f31e3fc426c91ef55f4d45d08d1ef0839d",
+  "baseTree": "8c3f03a2f1ad26b0b84bb614368cc0d8d453ba03",
+  "resultTree": "e8be4591025ec2ea8e85169ef750128675f518ce",
+  "reviewedFiles": [
+    "apps/Settings.tsx",
+    "hooks/useChatAI.ts",
+    "types.ts",
+    "utils/anthropicNative.image.test.ts",
+    "utils/anthropicNative.test.ts",
+    "utils/anthropicNative.ts",
+    "utils/anthropicPromptCache.chatLoop.wiring.test.ts",
+    "utils/anthropicPromptCache.instantNativeTools.test.ts",
+    "utils/anthropicPromptCache.test.ts",
+    "utils/anthropicPromptCache.ts",
+    "utils/apiCallLog.test.ts",
+    "utils/apiCallLog.ts",
+    "utils/apiConfigNormalize.test.ts",
+    "utils/apiConfigNormalize.ts",
+    "utils/devDebug.ts",
+    "utils/independentTextApi.test.ts",
+    "utils/independentTextApi.ts",
+    "utils/instantPushClient.anthropicNative.test.ts",
+    "utils/instantPushClient.ts",
+    "utils/safeApi.apiCallLog.test.ts",
+    "utils/safeApi.ts",
+    "utils/settingsAnthropicNative.wiring.test.ts",
+    "utils/settingsApiConnection.test.ts",
+    "utils/settingsApiConnection.ts"
+  ],
+  "verification": {
+    "testFiles": 12,
+    "tests": 68,
+    "replayTreeMatched": true,
+    "diffCheckPassed": true
+  },
+  "limits": "This is local candidate replay evidence only. It does not prove formal Web, APK, Worker, or runtime deployment."
+}

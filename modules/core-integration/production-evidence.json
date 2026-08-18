@@ -1,0 +1,11 @@
+{
+  "module": "core-integration",
+  "formalWebRelease": {
+    "path": "/var/www/sully.release-20260813-nursery-local-tools-v1",
+    "archive": "nursery-local-tools-staging-20260813.tar.gz",
+    "sha256": "5AC00F070F48FAFFB3B938A26C5975BB92B11B0897ED2E1E72D763AF56C565B6",
+    "bundle": "assets/memory-palace-CAB2KLDe.js",
+    "markers": ["sully-app-memory", "sullyos_apk_access_token_v1"]
+  },
+  "limits": "The archive inspection confirms only that this exact marker/code string exists in the named static bundle. It is not a complete source snapshot and does not establish formal route execution, APK/current-dist artifacts, workers, or any runtime deployment."
+}

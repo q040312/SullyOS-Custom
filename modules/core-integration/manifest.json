@@ -1,1 +1,1 @@
-{"id":"core-integration","status":"inventory","releaseBoundary":"formal","dependsOn":[],"summary":"共享类型、数据库、全局状态与聊天主循环接线。","containsSecrets":false,"applySupported":false}
+{"id":"core-integration","status":"ready","releaseBoundary":"formal","dependsOn":[],"summary":"共享 APK/VPS URL、凭据与 Ombre endpoint pinning 策略。","containsSecrets":false,"applySupported":true,"install":{"mode":"patch","patch":"patches/4dc992f.patch","base":{"kind":"upstream-tree","tree":"8acf736e5b1bd59a15fc446b99315685b5524bc8"},"resultTree":"8c3f03a2f1ad26b0b84bb614368cc0d8d453ba03"}}

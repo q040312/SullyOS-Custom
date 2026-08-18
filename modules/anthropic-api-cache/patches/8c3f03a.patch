@@ -1,0 +1,1432 @@
+diff --git a/apps/Settings.tsx b/apps/Settings.tsx
+index 2b91a06..ce1ebac 100644
+--- a/apps/Settings.tsx
++++ b/apps/Settings.tsx
+@@ -36,2 +36,3 @@ import { bucketRetryCount, isAnalyticsConfigured, isAnalyticsEnabled, setAnalyti
+ import { normalizeApiBaseUrl, normalizeApiCredential, normalizeApiModel } from '../utils/apiConfigNormalize';
++import { buildSettingsApiConnectionRequest, extractNativeSettingsConnectionReply } from '../utils/settingsApiConnection';
+ 
+@@ -420,2 +421,7 @@ const Settings: React.FC = () => {
+   );
++  const [localAnthropicNative, setLocalAnthropicNative] = useState(apiConfig.anthropicNative === true);
++  const [localAnthropicPromptCache, setLocalAnthropicPromptCache] = useState(apiConfig.anthropicPromptCache === true);
++  const [localAnthropicPromptCacheTtl, setLocalAnthropicPromptCacheTtl] = useState<'5m' | '1h'>(
++    apiConfig.anthropicPromptCacheTtl === '5m' ? '5m' : '1h'
++  );
+   const [localMiniMaxKey, setLocalMiniMaxKey] = useState(apiConfig.minimaxApiKey || '');
+@@ -765,2 +771,5 @@ const Settings: React.FC = () => {
+       setLocalTemperature(typeof apiConfig.temperature === 'number' ? apiConfig.temperature : 0.85);
++      setLocalAnthropicNative(apiConfig.anthropicNative === true);
++      setLocalAnthropicPromptCache(apiConfig.anthropicPromptCache === true);
++      setLocalAnthropicPromptCacheTtl(apiConfig.anthropicPromptCacheTtl === '5m' ? '5m' : '1h');
+       setLocalMiniMaxKey(apiConfig.minimaxApiKey || '');
+@@ -790,2 +799,5 @@ const Settings: React.FC = () => {
+       setLocalTemperature(typeof preset.config.temperature === 'number' ? preset.config.temperature : 0.85);
++      setLocalAnthropicNative(preset.config.anthropicNative === true);
++      setLocalAnthropicPromptCache(preset.config.anthropicPromptCache === true);
++      setLocalAnthropicPromptCacheTtl(preset.config.anthropicPromptCacheTtl === '5m' ? '5m' : '1h');
+       // MiniMax / AceStep settings are NOT overwritten by presets — typically one user
+@@ -843,2 +855,5 @@ const Settings: React.FC = () => {
+         temperature: localTemperature,
++        anthropicNative: localAnthropicNative,
++        anthropicPromptCache: localAnthropicPromptCache,
++        anthropicPromptCacheTtl: localAnthropicPromptCacheTtl,
+       });
+@@ -861,2 +876,5 @@ const Settings: React.FC = () => {
+       temperature: localTemperature,
++      anthropicNative: localAnthropicNative,
++      anthropicPromptCache: localAnthropicPromptCache,
++      anthropicPromptCacheTtl: localAnthropicPromptCacheTtl,
+     };
+@@ -1871,2 +1889,26 @@ const Settings: React.FC = () => {
+                         <div className="mt-2 pl-2 border-l-2 border-slate-100 space-y-3 py-2">
++                            <div className="rounded-lg border border-violet-100 bg-violet-50/50 px-2.5 py-2 space-y-2">
++                                <div className="flex items-center justify-between gap-3">
++                                    <div><span className="text-[10px] text-slate-500">Anthropic 原生 Messages</span><p className="text-[9px] text-slate-400">直连 /v1/messages；关闭时保持 OpenAI 兼容接口。</p></div>
++                                    <button type="button" onClick={() => setLocalAnthropicNative(v => !v)} className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${localAnthropicNative ? 'bg-violet-500' : 'bg-slate-200'}`}><span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${localAnthropicNative ? 'translate-x-4' : 'translate-x-0.5'}`} /></button>
++                                </div>
++                                <div className="flex items-start justify-between gap-2">
++                                    <div className="min-w-0 flex-1">
++                                        <span className="text-[10px] text-slate-500">提示缓存</span>
++                                        <p className="text-[9px] leading-snug text-slate-400">仅缓存稳定 system 前缀；图片、工具结果和运行态内容始终动态。</p>
++                                    </div>
++                                    <div className="flex shrink-0 items-center gap-1.5 pt-0.5">
++                                        {localAnthropicNative && localAnthropicPromptCache && (
++                                            <label className="flex items-center gap-1 text-[9px] text-slate-500">
++                                                <span className="hidden sm:inline">缓存保留</span>
++                                                <select value={localAnthropicPromptCacheTtl} onChange={event => setLocalAnthropicPromptCacheTtl(event.target.value === '5m' ? '5m' : '1h')} className="h-5 rounded border border-violet-200 bg-white px-1 text-[9px] text-slate-600 outline-none">
++                                                    <option value="5m">5分钟</option>
++                                                    <option value="1h">1小时</option>
++                                                </select>
++                                            </label>
++                                        )}
++                                        <button type="button" disabled={!localAnthropicNative} onClick={() => setLocalAnthropicPromptCache(v => !v)} className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-40 ${localAnthropicPromptCache ? 'bg-violet-500' : 'bg-slate-200'}`}><span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${localAnthropicPromptCache ? 'translate-x-4' : 'translate-x-0.5'}`} /></button>
++                                    </div>
++                                </div>
++                            </div>
+                             <p className="text-[10px] text-slate-300 leading-relaxed">
+@@ -1938,12 +1980,10 @@ const Settings: React.FC = () => {
+                         try {
+-                            const res = await fetch(`${localUrl.trim().replace(/\/+$/, '')}/chat/completions`, {
+-                                method: 'POST',
+-                                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localKey.trim()}` },
+-                                body: JSON.stringify({
+-                                    model: localModel.trim(),
+-                                    messages: [{ role: 'user', content: 'Hi' }],
+-                                    max_tokens: 5,
+-                                    stream: localStream,
+-                                }),
++                            const request = buildSettingsApiConnectionRequest({
++                                baseUrl: localUrl,
++                                apiKey: localKey,
++                                model: localModel,
++                                stream: localStream,
++                                anthropicNative: localAnthropicNative,
+                             });
++                            const res = await fetch(request.url, request.init);
+                             if (res.ok) {
+@@ -1951,3 +1991,5 @@ const Settings: React.FC = () => {
+                                 const data = await safeResponseJson(res);
+-                                const reply = extractContent(data);
++                                const reply = localAnthropicNative
++                                    ? extractNativeSettingsConnectionReply(data)
++                                    : extractContent(data);
+                                 setTestApiResult(`✅ 连接成功 — 模型回复: "${reply.slice(0, 30)}"`);
+diff --git a/hooks/useChatAI.ts b/hooks/useChatAI.ts
+index 96ae5e5..d8f0aba 100644
+--- a/hooks/useChatAI.ts
++++ b/hooks/useChatAI.ts
+@@ -6,2 +6,4 @@ import { ChatPrompts } from '../utils/chatPrompts';
+ import { safeFetchJson, safeResponseJson } from '../utils/safeApi';
++import { anthropicThinkingForModel, makeAnthropicToolLoopAssistantMessage, safeFetchAnthropicAsOpenAI } from '../utils/anthropicNative';
++import { applyAnthropicPromptCache, isAnthropicPromptCacheEnabled } from '../utils/anthropicPromptCache';
+ import { KeepAlive } from '../utils/keepAlive';
+@@ -939,2 +941,5 @@ export const useChatAI = ({
+             const userStream = (effectiveApi as any).stream ?? apiConfig.stream ?? false;
++            const anthropicNative = effectiveApi.anthropicNative === true;
++            const anthropicPromptCache = isAnthropicPromptCacheEnabled(effectiveApi);
++            const anthropicPromptCacheTtl = effectiveApi.anthropicPromptCacheTtl === '5m' ? '5m' : '1h';
+             const baseReqBody: any = {
+@@ -946,2 +951,5 @@ export const useChatAI = ({
+             };
++            // Native Messages API rejects an explicit non-default temperature for
++            // current Claude models. Let Anthropic select its protocol default.
++            if (anthropicNative) delete baseReqBody.temperature;
+             // 思考过程展示开启时显式向后端请求 extended thinking。
+@@ -961,3 +969,6 @@ export const useChatAI = ({
+             const amsg2ToolsInjected = isAmsg2EnabledForChar(char) && await isAmsg2GlobalReady();
+-            if (shouldSendThinkingParams({
++            // Anthropic's native Messages protocol supports thinking with tools,
++            // including continuation after a tool_result. Keep its native path
++            // out of the OpenAI-compatible tool gate used for Gemini relays.
++            if ((anthropicNative && !!payload.flags.thinkingActive) || shouldSendThinkingParams({
+                 thinkingActive: !!payload.flags.thinkingActive,
+@@ -968,8 +979,12 @@ export const useChatAI = ({
+                 const m: string = baseReqBody.model || '';
+-                if (/^claude-/i.test(m) && !/-thinking$/i.test(m)) {
+-                    baseReqBody.model = `${m}-thinking`;
++                if (anthropicNative) {
++                    baseReqBody.thinking = anthropicThinkingForModel(m);
++                } else {
++                    if (/^claude-/i.test(m) && !/-thinking$/i.test(m)) {
++                        baseReqBody.model = `${m}-thinking`;
++                    }
++                    baseReqBody.thinking = { type: 'enabled', budget_tokens: 4000 };
++                    baseReqBody.reasoning_effort = 'medium';
++                    baseReqBody.extra_body = { ...(baseReqBody.extra_body || {}), thinking: { type: 'enabled', budget_tokens: 4000 } };
+                 }
+-                baseReqBody.thinking = { type: 'enabled', budget_tokens: 4000 };
+-                baseReqBody.reasoning_effort = 'medium';
+-                baseReqBody.extra_body = { ...(baseReqBody.extra_body || {}), thinking: { type: 'enabled', budget_tokens: 4000 } };
+                 // 开思考时不要带采样参数: Claude 系（含各种中转 claude-*）在 thinking 启用时
+@@ -1076,3 +1091,3 @@ export const useChatAI = ({
+             // 表现就是"选了城市也没用 / 角色不下单"。这些模式下跳过 instant push, 用本地 fetch 跑工具循环。
+-            if (isInstantConfigReady() && !payload.flags.luckinChatActive && !payload.flags.mcdActive && !payload.flags.luckinActive && !payload.flags.mcpChatActive) {
++            if (isInstantConfigReady() && !anthropicNative && !payload.flags.luckinChatActive && !payload.flags.mcdActive && !payload.flags.luckinActive && !payload.flags.mcpChatActive) {
+                 // 走这条路 = 上面那段 amsg2 的工具、排程现状块都白拼了（instant 发的是原始
+@@ -1085,3 +1100,3 @@ export const useChatAI = ({
+                     contactName: char.name,
+-                    messages: fullMessages as InstantPushPayload['messages'],
++                    messages: (anthropicPromptCache ? applyAnthropicPromptCache(fullMessages, anthropicPromptCacheTtl) : fullMessages) as InstantPushPayload['messages'],
+                     apiUrl: effectiveApi.baseUrl,
+@@ -1089,2 +1104,4 @@ export const useChatAI = ({
+                     primaryModel: effectiveApi.model,
++                    anthropicNative,
++                    anthropicPromptCache,
+                     maxTokens: 8000,
+@@ -1179,2 +1196,22 @@ export const useChatAI = ({
+ 
++
++            // All local turns, including tool follow-ups, retain the native transport and
++            // apply the cache breakpoint once to that request's original message array.
++            const sendChatRequest = async (
++                requestBody: any,
++                retries = 0,
++                timeoutMs = 0,
++                requestMeta?: Parameters<typeof safeFetchJson>[4],
++                requestStreamHooks?: Parameters<typeof safeFetchJson>[5],
++            ) => {
++                const cacheReadyBody = {
++                    ...requestBody,
++                    messages: anthropicPromptCache
++                        ? applyAnthropicPromptCache(requestBody.messages, anthropicPromptCacheTtl)
++                        : requestBody.messages,
++                };
++                return anthropicNative
++                    ? safeFetchAnthropicAsOpenAI(effectiveApi.baseUrl, effectiveApi.apiKey || 'sk-none', cacheReadyBody, retries, timeoutMs, requestMeta, requestStreamHooks)
++                    : safeFetchJson(`${baseUrl}/chat/completions`, { method: 'POST', headers, body: JSON.stringify(cacheReadyBody) }, retries, timeoutMs, requestMeta, requestStreamHooks);
++            };
+             // 主请求即将发出 → 立即并行发射情绪评估（错峰延迟已按用户要求取消，见定义处注释）。
+@@ -1193,6 +1230,4 @@ export const useChatAI = ({
+             try {
+-                data = await safeFetchJson(`${baseUrl}/chat/completions`, {
+-                    method: 'POST', headers,
+-                    body: JSON.stringify({ ...baseReqBody, messages: withAmsg2TaskContext(baseReqBody.messages) })
+-                }, 2, 0, { appName: '消息', charId: char.id, charName: char.name, purpose: '聊天回复' }, streamHooks);
++                const requestBody = { ...baseReqBody, messages: withAmsg2TaskContext(baseReqBody.messages) };
++                data = await sendChatRequest(requestBody, 2, 0, { appName: '消息', charId: char.id, charName: char.name, purpose: '聊天回复' }, streamHooks);
+             } catch (e) {
+@@ -1211,6 +1246,8 @@ export const useChatAI = ({
+                 });
+-                data = await safeFetchJson(`${baseUrl}/chat/completions`, {
+-                    method: 'POST', headers,
+-                    body: JSON.stringify(fallbackBody)
+-                }, 0, 0, { appName: '消息', charId: char.id, charName: char.name, purpose: 'MCP tools 兼容重试' });
++                data = await sendChatRequest(
++                    fallbackBody,
++                    0,
++                    0,
++                    { appName: '消息', charId: char.id, charName: char.name, purpose: 'MCP tools 兼容重试' },
++                );
+             }
+@@ -1251,8 +1288,3 @@ export const useChatAI = ({
+                     if (!toolCalls || !toolCalls.length) break;
+-                    loopMessages.push({
+-                        role: 'assistant',
+-                        // 空 content + tool_calls 在 Gemini 兼容层会被判 INVALID_ARGUMENT, 给个占位
+-                        content: data.choices[0].message.content || '(调用工具中)',
+-                        tool_calls: toolCalls,
+-                    } as any);
++                    loopMessages.push(makeAnthropicToolLoopAssistantMessage(data.choices[0].message, toolCalls));
+                     for (const tc of toolCalls) {
+@@ -1344,6 +1376,3 @@ export const useChatAI = ({
+                     delete followBody.tool_choice;
+-                    data = await safeFetchJson(`${baseUrl}/chat/completions`, {
+-                        method: 'POST', headers,
+-                        body: JSON.stringify(followBody)
+-                    });
++                    data = await sendChatRequest(followBody);
+                     updateTokenUsage(data, historyMsgCount, `mcd-propose-${it + 1}`);
+@@ -1361,8 +1390,3 @@ export const useChatAI = ({
+                     if (!toolCalls || !toolCalls.length) break;
+-                    loopMessages.push({
+-                        role: 'assistant',
+-                        // 空 content + tool_calls 在 Gemini 兼容层会被判 INVALID_ARGUMENT, 给个占位
+-                        content: data.choices[0].message.content || '(调用工具中)',
+-                        tool_calls: toolCalls,
+-                    } as any);
++                    loopMessages.push(makeAnthropicToolLoopAssistantMessage(data.choices[0].message, toolCalls));
+                     for (const tc of toolCalls) {
+@@ -1447,6 +1471,3 @@ export const useChatAI = ({
+                     delete followBody.tool_choice;
+-                    data = await safeFetchJson(`${baseUrl}/chat/completions`, {
+-                        method: 'POST', headers,
+-                        body: JSON.stringify(followBody)
+-                    });
++                    data = await sendChatRequest(followBody);
+                     updateTokenUsage(data, historyMsgCount, `luckin-propose-${it + 1}`);
+@@ -1475,8 +1496,3 @@ export const useChatAI = ({
+                     }
+-                    loopMessages.push({
+-                        role: 'assistant',
+-                        // 空 content + tool_calls 在 Gemini 兼容层会被判 INVALID_ARGUMENT, 给个占位
+-                        content: data.choices[0].message.content || '(调用工具中)',
+-                        tool_calls: toolCalls,
+-                    } as any);
++                    loopMessages.push(makeAnthropicToolLoopAssistantMessage(data.choices[0].message, toolCalls));
+                     for (const tc of toolCalls) {
+@@ -1560,6 +1576,3 @@ export const useChatAI = ({
+                     const followBody = { ...baseReqBody, messages: withAmsg2TaskContext(loopMessages) };
+-                    data = await safeFetchJson(`${baseUrl}/chat/completions`, {
+-                        method: 'POST', headers,
+-                        body: JSON.stringify(followBody)
+-                    });
++                    data = await sendChatRequest(followBody);
+                     updateTokenUsage(data, historyMsgCount, `${payload.flags.luckinChatActive ? 'luckin-chat' : 'mcp-chat'}-${it + 1}`);
+@@ -1605,6 +1618,3 @@ export const useChatAI = ({
+                     const followBody = buildMcpTextFallbackBody(baseReqBody, textLoopMessages);
+-                    data = await safeFetchJson(`${baseUrl}/chat/completions`, {
+-                        method: 'POST', headers,
+-                        body: JSON.stringify(followBody)
+-                    });
++                    data = await sendChatRequest(followBody);
+                     updateTokenUsage(data, historyMsgCount, `mcp-text-${it + 1}`);
+diff --git a/types.ts b/types.ts
+index 6fe4f38..3c0166b 100644
+--- a/types.ts
++++ b/types.ts
+@@ -231,2 +231,3 @@ export type MinimaxRegion = 'domestic' | 'overseas';
+ export type TtsProvider = 'minimax' | 'fishaudio';
++export type AnthropicPromptCacheTtl = '5m' | '1h';
+ 
+@@ -259,2 +260,8 @@ export interface APIConfig {
+   };
++  /** Use Anthropic's native /v1/messages request and response shape. */
++  anthropicNative?: boolean;
++  /** Add a cache breakpoint to the stable system prefix when native mode is enabled. */
++  anthropicPromptCache?: boolean;
++  /** Anthropic prompt-cache retention. Missing / invalid saved values fall back to 1 hour. */
++  anthropicPromptCacheTtl?: AnthropicPromptCacheTtl;
+   // Replicate token (r8_xxx) for ACE-Step song generation in 写歌 App.
+@@ -269,2 +276,10 @@ export interface APIConfig {
+ 
++/**
++ * 某个功能可覆盖的「文本 LLM」字段。语音、MiniMax 等全局能力不属于独立文本 API，
++ * 因此不能借由该配置意外切换。
++ */
++export type IndependentTextApiConfig = Partial<Pick<APIConfig,
++  'baseUrl' | 'apiKey' | 'model' | 'anthropicNative' | 'anthropicPromptCache' | 'stream' | 'temperature'
++>>;
++
+ export interface InstantPushConfig {
+diff --git a/utils/anthropicNative.image.test.ts b/utils/anthropicNative.image.test.ts
+new file mode 100644
+index 0000000..f2920f0
+--- /dev/null
++++ b/utils/anthropicNative.image.test.ts
+@@ -0,0 +1,52 @@
++import { describe, expect, it } from 'vitest';
++import { toAnthropicRequest } from './anthropicNative';
++
++describe('anthropic native image conversion', () => {
++    it('converts OpenAI image_url data URLs to native Anthropic image blocks', () => {
++        const body = toAnthropicRequest({
++            model: 'claude-opus-5',
++            messages: [{ role: 'user', content: [
++                { type: 'text', text: '请看清图片里的字' },
++                { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,QUJDRA==' } },
++            ] }],
++        });
++
++        expect(body.messages[0].content).toEqual([
++            { type: 'text', text: '请看清图片里的字' },
++            { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'QUJDRA==' } },
++        ]);
++        expect(JSON.stringify(body.messages)).not.toContain('data:image/jpeg');
++        for (const mediaType of ['image/png', 'image/gif', 'image/webp']) {
++            const converted = toAnthropicRequest({
++                model: 'claude-opus-5',
++                messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:${mediaType};base64,QUJDRA==` } }] }],
++            });
++            expect(converted.messages[0].content[0]).toEqual({
++                type: 'image', source: { type: 'base64', media_type: mediaType, data: 'QUJDRA==' },
++            });
++        }
++    });
++
++    it('supports remote image URLs and safely degrades invalid image values', () => {
++        const remote = toAnthropicRequest({
++            model: 'claude-opus-5',
++            messages: [{ role: 'user', content: [
++                { type: 'image_url', image_url: { url: 'https://example.com/photo.png' } },
++            ] }],
++        });
++        expect(remote.messages[0].content[0]).toEqual({
++            type: 'image', source: { type: 'url', url: 'https://example.com/photo.png' },
++        });
++
++        const invalid = toAnthropicRequest({
++            model: 'claude-opus-5',
++            messages: [{ role: 'user', content: [
++                { type: 'image_url', image_url: { url: 'data:image/svg+xml;base64,PHN2Zz4=' } },
++            ] }],
++        });
++        expect(invalid.messages[0].content[0]).toEqual({
++            type: 'text', text: '[Image attachment unavailable]',
++        });
++        expect(JSON.stringify(invalid.messages)).not.toContain('PHN2Zz4');
++    });
++});
+diff --git a/utils/anthropicNative.test.ts b/utils/anthropicNative.test.ts
+new file mode 100644
+index 0000000..25e7905
+--- /dev/null
++++ b/utils/anthropicNative.test.ts
+@@ -0,0 +1,155 @@
++import { describe, expect, it } from 'vitest';
++import {
++    anthropicThinkingForModel,
++    fromAnthropicResponse,
++    makeAnthropicToolLoopAssistantMessage,
++    resolveAnthropicMessagesUrl,
++    safeFetchAnthropicAsOpenAI,
++    toAnthropicRequest,
++} from './anthropicNative';
++
++describe('anthropic native adapter', () => {
++    it('resolves a native messages endpoint without duplicating path segments', () => {
++        expect(resolveAnthropicMessagesUrl('https://relay.example/v1')).toBe('https://relay.example/v1/messages');
++        expect(resolveAnthropicMessagesUrl('https://relay.example')).toBe('https://relay.example/v1/messages');
++        expect(resolveAnthropicMessagesUrl('https://relay.example/v1/messages')).toBe('https://relay.example/v1/messages');
++    });
++
++    it('keeps the stable cache breakpoint in system and leaves dynamic content uncached', () => {
++        const body = toAnthropicRequest({
++            model: 'claude-opus-5',
++            max_tokens: 100,
++            cache_control: { type: 'ephemeral', ttl: '1h' },
++            messages: [
++                {
++                    role: 'system',
++                    content: [{
++                        type: 'text',
++                        text: 'stable persona',
++                        cache_control: { type: 'ephemeral' },
++                    }],
++                },
++                { role: 'user', content: 'history' },
++                { role: 'assistant', content: 'reply' },
++                { role: 'system', content: 'current time and retrieved memory' },
++                { role: 'user', content: 'latest turn' },
++            ],
++        });
++
++        expect(body.system).toEqual([{
++            type: 'text',
++            text: 'stable persona',
++            cache_control: { type: 'ephemeral' },
++        }]);
++        expect(body.cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
++        expect(JSON.stringify(body.messages)).not.toContain('cache_control');
++        expect(JSON.stringify(body.messages)).toContain('current time and retrieved memory');
++        expect(body.stream).toBe(false);
++    });
++
++    it('converts OpenAI tools and Anthropic tool_use responses in both directions', () => {
++        const request = toAnthropicRequest({
++            model: 'claude-opus-5',
++            messages: [{ role: 'user', content: 'search' }],
++            tools: [{
++                type: 'function',
++                function: {
++                    name: 'breath_search',
++                    description: 'search memory',
++                    parameters: { type: 'object', properties: { query: { type: 'string' } } },
++                },
++            }],
++            tool_choice: 'auto',
++        });
++        expect(request.tools[0].name).toBe('breath_search');
++        expect(request.tools[0].input_schema.properties.query.type).toBe('string');
++        expect(request.tool_choice).toEqual({ type: 'auto' });
++
++        const response = fromAnthropicResponse({
++            id: 'msg_1',
++            model: 'claude-opus-5',
++            stop_reason: 'tool_use',
++            content: [{ type: 'tool_use', id: 'toolu_1', name: 'breath_search', input: { query: 'umbrella' } }],
++            usage: {
++                input_tokens: 1000,
++                output_tokens: 20,
++                cache_creation_input_tokens: 800,
++                cache_read_input_tokens: 200,
++            },
++        });
++        expect(response.choices[0].finish_reason).toBe('tool_calls');
++        expect(response.choices[0].message.tool_calls[0].function.arguments).toBe('{"query":"umbrella"}');
++        expect(response.usage.prompt_tokens).toBe(2000);
++        expect(response.usage.total_tokens).toBe(2020);
++        expect(response.usage.cache_creation_input_tokens).toBe(800);
++        expect(response.usage.cache_read_input_tokens).toBe(200);
++    });
++
++    it('omits temperature, forwards native thinking, and chooses the supported thinking form by model', () => {
++        expect(anthropicThinkingForModel('claude-sonnet-4-5')).toEqual({ type: 'enabled', budget_tokens: 4000 });
++        expect(anthropicThinkingForModel('claude-opus-4-6')).toEqual({ type: 'enabled', budget_tokens: 4000 });
++        expect(anthropicThinkingForModel('claude-opus-4-20250514')).toEqual({ type: 'enabled', budget_tokens: 4000 });
++        expect(anthropicThinkingForModel('claude-sonnet-4-7')).toEqual({ type: 'adaptive' });
++        expect(anthropicThinkingForModel('claude-opus-5')).toEqual({ type: 'adaptive' });
++
++        const request = toAnthropicRequest({
++            model: 'claude-opus-5', temperature: 0.85,
++            thinking: { type: 'adaptive' },
++            messages: [{ role: 'user', content: 'hi' }],
++        });
++        expect(request).not.toHaveProperty('temperature');
++        expect(request.thinking).toEqual({ type: 'adaptive' });
++    });
++
++    it('round-trips thinking, redacted thinking, text, and tool_use blocks in their original order', () => {
++        const content = [
++            { type: 'thinking', thinking: 'private reasoning', signature: 'sig-think' },
++            { type: 'redacted_thinking', data: 'opaque reasoning proof' },
++            { type: 'text', text: 'Let me check that.' },
++            { type: 'tool_use', id: 'toolu_1', name: 'lookup', input: { q: 'rain' } },
++        ];
++        const response = fromAnthropicResponse({ stop_reason: 'tool_use', content });
++        const stored = response.choices[0].message;
++        expect(JSON.stringify(stored)).not.toContain('private reasoning');
++        expect(JSON.stringify(stored)).not.toContain('opaque reasoning proof');
++
++        const next = makeAnthropicToolLoopAssistantMessage(stored);
++        const request = toAnthropicRequest({
++            model: 'claude-opus-5',
++            messages: [
++                { role: 'user', content: 'use a tool' },
++                next,
++                { role: 'tool', tool_call_id: 'toolu_1', content: 'it is raining' },
++            ],
++        });
++        expect(request.messages[1].content).toEqual(content);
++        expect(request.messages[2].content).toEqual([{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'it is raining' }]);
++    });
++
++    it('sends the native Messages request shape without temperature', async () => {
++        const oldFetch = globalThis.fetch;
++        let seenUrl = '';
++        let seenInit: RequestInit | undefined;
++        globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
++            seenUrl = String(url);
++            seenInit = init;
++            return new Response(JSON.stringify({ id: 'msg_1', model: 'claude-opus-5', content: [{ type: 'text', text: 'ok' }], usage: {} }), {
++                status: 200, headers: { 'content-type': 'application/json' },
++            });
++        }) as typeof fetch;
++        try {
++            await safeFetchAnthropicAsOpenAI('https://api.example/v1', 'test', {
++                model: 'claude-opus-5', temperature: 0.85,
++                thinking: { type: 'adaptive' }, messages: [{ role: 'user', content: 'hello' }],
++            }, 0);
++        } finally {
++            globalThis.fetch = oldFetch;
++        }
++        expect(seenUrl).toBe('https://api.example/v1/messages');
++        expect(seenInit?.headers).toMatchObject({ 'anthropic-version': '2023-06-01', 'x-api-key': 'test' });
++        expect(JSON.parse(String(seenInit?.body))).toMatchObject({
++            model: 'claude-opus-5', thinking: { type: 'adaptive' }, messages: [{ role: 'user' }],
++        });
++        expect(JSON.parse(String(seenInit?.body))).not.toHaveProperty('temperature');
++    });
++});
+diff --git a/utils/anthropicNative.ts b/utils/anthropicNative.ts
+new file mode 100644
+index 0000000..f3f03af
+--- /dev/null
++++ b/utils/anthropicNative.ts
+@@ -0,0 +1,120 @@
++import { safeFetchJson, type StreamHooks } from './safeApi';
++import type { ApiCallMeta } from './apiCallLog';
++
++const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
++// Deliberately non-enumerable: extended-thinking blocks are needed only for the
++// next native tool-loop request. They must never reach UI storage or debug logs.
++const ANTHROPIC_RESPONSE_CONTENT = Symbol('anthropic-response-content');
++
++export const anthropicThinkingForModel = (model: unknown): { type: 'adaptive' } | { type: 'enabled'; budget_tokens: number } => {
++  // The optional minor is a real one-digit model segment (4-7 / 4.7), never
++  // the date in stable names such as claude-opus-4-20250514.
++  const match = String(model || '').match(/claude-[a-z]+-(\d+)(?:[-.](\d)(?=$|-))?/i);
++  const major = Number(match?.[1] || 0);
++  const minor = Number(match?.[2] || 0);
++  // Claude 4.7+ and all later named generations use adaptive thinking. Older
++  // 4.5/4.6 models still require the explicit enabled budget form.
++  return major > 4 || (major === 4 && minor >= 7)
++    ? { type: 'adaptive' }
++    : { type: 'enabled', budget_tokens: 4000 };
++};
++const imageBlock = (value: unknown): any | null => {
++  const url = String(value || '').trim();
++  const data = url.match(/^data:(image\/[a-z0-9.+-]+);base64,([\s\S]+)$/i);
++  if (data && IMAGE_TYPES.has(data[1].toLowerCase()) && data[2].trim()) {
++    return { type: 'image', source: { type: 'base64', media_type: data[1].toLowerCase(), data: data[2].replace(/\s+/g, '') } };
++  }
++  return /^https?:\/\/\S+$/i.test(url) ? { type: 'image', source: { type: 'url', url } } : null;
++};
++
++const blocks = (content: any, allowImages = false): any[] => {
++  if (typeof content === 'string') return [{ type: 'text', text: content }];
++  if (!Array.isArray(content)) return [{ type: 'text', text: String(content ?? '') }];
++  return content.flatMap(part => {
++    if (!part || typeof part !== 'object') return [{ type: 'text', text: String(part ?? '') }];
++    if (part.type === 'text') return [{ type: 'text', text: String(part.text ?? ''), ...(part.cache_control ? { cache_control: part.cache_control } : {}) }];
++    if (part.type === 'image_url') {
++      const image = allowImages ? imageBlock(part.image_url?.url || part.image_url) : null;
++      return image ? [image] : [{ type: 'text', text: '[Image attachment unavailable]' }];
++    }
++    return [{ type: 'text', text: JSON.stringify(part) }];
++  });
++};
++
++const append = (target: any[], role: 'user' | 'assistant', content: any[]) => {
++  const previous = target[target.length - 1];
++  if (previous?.role === role) previous.content.push(...content);
++  else target.push({ role, content: content.length ? content : [{ type: 'text', text: ' ' }] });
++};
++
++export const resolveAnthropicMessagesUrl = (baseUrl: string): string => {
++  const base = baseUrl.trim().replace(/\/+$/, '');
++  if (/\/v1\/messages$/i.test(base) || /\/messages$/i.test(base)) return base;
++  return /\/v1$/i.test(base) ? `${base}/messages` : `${base}/v1/messages`;
++};
++
++export const toAnthropicRequest = (body: any): any => {
++  const source = Array.isArray(body?.messages) ? body.messages : [];
++  const firstSystem = source.findIndex((message: any) => message?.role === 'system');
++  const system = firstSystem >= 0 ? blocks(source[firstSystem].content) : [];
++  const messages: any[] = [];
++  source.forEach((message: any, index: number) => {
++    if (!message) return;
++    if (message.role === 'system') {
++      if (index !== firstSystem) append(messages, 'user', [{ type: 'text', text: `SULLY_INTERNAL_CONTEXT\n${blocks(message.content).map(x => x.text || '').join('\n')}` }]);
++      return;
++    }
++    if (message.role === 'tool') {
++      append(messages, 'user', [{ type: 'tool_result', tool_use_id: message.tool_call_id || message.id || 'unknown_tool_call', content: typeof message.content === 'string' ? message.content : JSON.stringify(message.content ?? '') }]);
++      return;
++    }
++    const nativeContent = message.role === 'assistant' ? message[ANTHROPIC_RESPONSE_CONTENT] : undefined;
++    const content = Array.isArray(nativeContent)
++      ? nativeContent.map((block: any) => ({ ...block }))
++      : blocks(message.content, message.role !== 'assistant');
++    if (message.role === 'assistant' && !nativeContent) for (const call of message.tool_calls || []) {
++      let input: any = call.function?.arguments ?? call.arguments ?? {};
++      if (typeof input === 'string') try { input = input ? JSON.parse(input) : {}; } catch { input = { raw: input }; }
++      content.push({ type: 'tool_use', id: call.id || `toolu_${Math.random().toString(36).slice(2)}`, name: call.function?.name || call.name || '', input });
++    }
++    append(messages, message.role === 'assistant' ? 'assistant' : 'user', content);
++  });
++  if (messages[0]?.role === 'assistant') messages.unshift({ role: 'user', content: [{ type: 'text', text: '(Conversation context follows.)' }] });
++  if (!messages.length) messages.push({ role: 'user', content: [{ type: 'text', text: ' ' }] });
++  const tools = Array.isArray(body?.tools) ? body.tools.filter((tool: any) => tool?.type === 'function' && tool.function?.name).map((tool: any) => ({ name: tool.function.name, ...(tool.function.description ? { description: tool.function.description } : {}), input_schema: tool.function.parameters || { type: 'object', properties: {} } })) : [];
++  const toolChoice = body?.tool_choice === 'auto' || !body?.tool_choice ? { type: 'auto' } : body.tool_choice?.function?.name ? { type: 'tool', name: body.tool_choice.function.name } : undefined;
++  return { model: body.model, max_tokens: body.max_tokens || body.max_completion_tokens || 8000, ...(body?.cache_control ? { cache_control: body.cache_control } : {}), messages, ...(system.length ? { system } : {}), ...(body?.thinking ? { thinking: body.thinking } : {}), ...(tools.length ? { tools } : {}), ...(toolChoice ? { tool_choice: toolChoice } : {}), stream: false };
++};
++
++export const fromAnthropicResponse = (response: any): any => {
++  const content = Array.isArray(response?.content) ? response.content : [];
++  const text = content.filter((x: any) => x?.type === 'text').map((x: any) => x.text || '').join('');
++  const tool_calls = content.filter((x: any) => x?.type === 'tool_use').map((x: any) => ({ id: x.id, type: 'function', function: { name: x.name, arguments: JSON.stringify(x.input || {}) } }));
++  const inputTokens = response?.usage?.input_tokens || 0;
++  const outputTokens = response?.usage?.output_tokens || 0;
++  const cacheCreationInputTokens = response?.usage?.cache_creation_input_tokens || 0;
++  const cacheReadInputTokens = response?.usage?.cache_read_input_tokens || 0;
++  const promptTokens = inputTokens + cacheCreationInputTokens + cacheReadInputTokens;
++  const message: any = { role: 'assistant', content: text, ...(tool_calls.length ? { tool_calls } : {}) };
++  Object.defineProperty(message, ANTHROPIC_RESPONSE_CONTENT, { value: content, enumerable: false });
++  return { id: response?.id || 'anthropic-message', object: 'chat.completion', created: Math.floor(Date.now() / 1000), model: response?.model || '', choices: [{ index: 0, message, finish_reason: response?.stop_reason === 'tool_use' ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: promptTokens, completion_tokens: outputTokens, total_tokens: promptTokens + outputTokens, cache_creation_input_tokens: response?.usage?.cache_creation_input_tokens, cache_read_input_tokens: response?.usage?.cache_read_input_tokens } };
++};
++
++/** Retain native extended-thinking blocks only while the in-memory tool loop continues. */
++export const makeAnthropicToolLoopAssistantMessage = (message: any, toolCalls = message?.tool_calls): any => {
++  const next: any = {
++    role: 'assistant',
++    content: message?.content || '(调用工具中)',
++    ...(toolCalls?.length ? { tool_calls: toolCalls } : {}),
++  };
++  if (message?.[ANTHROPIC_RESPONSE_CONTENT]) {
++    Object.defineProperty(next, ANTHROPIC_RESPONSE_CONTENT, {
++      value: message[ANTHROPIC_RESPONSE_CONTENT],
++      enumerable: false,
++    });
++  }
++  return next;
++};
++
++export const safeFetchAnthropicAsOpenAI = async (baseUrl: string, apiKey: string, body: any, retries = 0, timeoutMs = 0, meta?: ApiCallMeta, hooks?: StreamHooks): Promise<any> =>
++  fromAnthropicResponse(await safeFetchJson(resolveAnthropicMessagesUrl(baseUrl), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey || 'sk-none', 'anthropic-version': '2023-06-01' }, body: JSON.stringify(toAnthropicRequest(body)) }, retries, timeoutMs, meta, hooks));
+diff --git a/utils/anthropicPromptCache.chatLoop.wiring.test.ts b/utils/anthropicPromptCache.chatLoop.wiring.test.ts
+new file mode 100644
+index 0000000..3f7a252
+--- /dev/null
++++ b/utils/anthropicPromptCache.chatLoop.wiring.test.ts
+@@ -0,0 +1,23 @@
++import { describe, expect, it } from 'vitest';
++import { readFileSync } from 'node:fs';
++import { fileURLToPath } from 'node:url';
++
++const src = readFileSync(
++  fileURLToPath(new URL('../hooks/useChatAI.ts', import.meta.url)),
++  'utf8',
++);
++
++describe('Anthropic 原生聊天工具循环接线', () => {
++  it('将 transport 和每轮缓存断点集中在一个发送入口', () => {
++    expect(src).toContain('const sendChatRequest = async');
++    expect(src).toContain('applyAnthropicPromptCache(requestBody.messages, anthropicPromptCacheTtl)');
++    expect(src).toContain('? safeFetchAnthropicAsOpenAI');
++    expect(src).toContain(': safeFetchJson(');
++  });
++
++  it('首轮、降级和四类后续请求都经由该入口', () => {
++    expect(src.match(/data = await sendChatRequest\(/g) ?? []).toHaveLength(6);
++    const requestSection = src.slice(src.indexOf('const sendChatRequest = async'));
++    expect(requestSection).not.toContain('data = await safeFetchJson(');
++  });
++});
+diff --git a/utils/anthropicPromptCache.instantNativeTools.test.ts b/utils/anthropicPromptCache.instantNativeTools.test.ts
+new file mode 100644
+index 0000000..f477df6
+--- /dev/null
++++ b/utils/anthropicPromptCache.instantNativeTools.test.ts
+@@ -0,0 +1,19 @@
++import { describe, expect, it } from 'vitest';
++import { readFileSync } from 'node:fs';
++import { fileURLToPath } from 'node:url';
++
++const src = readFileSync(
++  fileURLToPath(new URL('../hooks/useChatAI.ts', import.meta.url)),
++  'utf8',
++);
++
++describe('Instant Anthropic Native safety', () => {
++  it('keeps every Native request on the local path, including no-tools requests', () => {
++    const instantStart = src.indexOf('if (isInstantConfigReady()');
++    const instantEnd = src.indexOf('// 流式预览', instantStart);
++    const instantBranch = src.slice(instantStart, instantEnd);
++    expect(instantBranch).toContain('!anthropicNative');
++    expect(instantBranch).not.toContain('resolveInstantAnthropicBridgeUrl');
++    expect(src).toContain('(anthropicNative && !!payload.flags.thinkingActive)');
++  });
++});
+diff --git a/utils/anthropicPromptCache.test.ts b/utils/anthropicPromptCache.test.ts
+new file mode 100644
+index 0000000..f361f20
+--- /dev/null
++++ b/utils/anthropicPromptCache.test.ts
+@@ -0,0 +1,32 @@
++import { describe, expect, it } from 'vitest';
++import { applyAnthropicPromptCache, isAnthropicPromptCacheEnabled } from './anthropicPromptCache';
++
++describe('applyAnthropicPromptCache', () => {
++  it('marks only the stable first system text block', () => {
++    const result = applyAnthropicPromptCache([
++      { role: 'system', content: 'stable' },
++      { role: 'system', content: 'runtime' },
++      { role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://example.test/image.png' } }] },
++      { role: 'tool', content: 'dynamic result' },
++    ]);
++    expect(result[0].content[0]).toMatchObject({
++      type: 'text',
++      text: 'stable',
++      cache_control: { type: 'ephemeral', ttl: '1h' },
++    });
++    expect(JSON.stringify(result.slice(1))).not.toContain('cache_control');
++  });
++  it('keeps the explicit one-hour TTL', () => {
++    const result = applyAnthropicPromptCache([{ role: 'system', content: 'stable' }], '1h');
++    expect(result[0].content[0].cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
++  });
++  it('uses Anthropic default retention for five minutes without sending ttl', () => {
++    const result = applyAnthropicPromptCache([{ role: 'system', content: 'stable' }], '5m');
++    expect(result[0].content[0].cache_control).toEqual({ type: 'ephemeral' });
++  });
++  it('never enables cache breakpoints for a non-native request', () => {
++    expect(isAnthropicPromptCacheEnabled({ anthropicNative: false, anthropicPromptCache: true })).toBe(false);
++    expect(isAnthropicPromptCacheEnabled({ anthropicNative: true, anthropicPromptCache: false })).toBe(false);
++    expect(isAnthropicPromptCacheEnabled({ anthropicNative: true, anthropicPromptCache: true })).toBe(true);
++  });
++});
+diff --git a/utils/anthropicPromptCache.ts b/utils/anthropicPromptCache.ts
+new file mode 100644
+index 0000000..c029080
+--- /dev/null
++++ b/utils/anthropicPromptCache.ts
+@@ -0,0 +1,37 @@
++import type { AnthropicPromptCacheTtl } from '../types';
++
++export const isAnthropicPromptCacheEnabled = (config: { anthropicNative?: boolean; anthropicPromptCache?: boolean }): boolean =>
++  config.anthropicNative === true && config.anthropicPromptCache === true;
++
++/**
++ * Adds an Anthropic cache breakpoint only to Sully's stable system prefix.
++ * Runtime context, history, tool results and user-attached images stay dynamic.
++ */
++const withCacheBreakpoint = (content: any, ttl: AnthropicPromptCacheTtl): any => {
++  // Anthropic's five-minute retention is the default and must omit `ttl`.
++  const cache_control = ttl === '5m'
++    ? { type: 'ephemeral' }
++    : { type: 'ephemeral', ttl: '1h' };
++  if (typeof content === 'string') return [{ type: 'text', text: content, cache_control }];
++  if (Array.isArray(content)) {
++    const parts = content.map(part => part && typeof part === 'object' ? { ...part } : part);
++    for (let i = parts.length - 1; i >= 0; i -= 1) {
++      const part = parts[i];
++      if (part && typeof part === 'object' && part.type === 'text') {
++        parts[i] = { ...part, cache_control };
++        return parts;
++      }
++    }
++    return [...parts, { type: 'text', text: ' ', cache_control }];
++  }
++  return [{ type: 'text', text: String(content ?? ''), cache_control }];
++};
++
++export const applyAnthropicPromptCache = (messages: any[], ttl: AnthropicPromptCacheTtl = '1h'): any[] => {
++  const source = messages || [];
++  const stableIndex = source.findIndex(message => message?.role === 'system');
++  if (stableIndex < 0) return source;
++  return source.map((message, index) => index === stableIndex
++    ? { ...message, content: withCacheBreakpoint(message.content, ttl) }
++    : message);
++};
+diff --git a/utils/apiCallLog.test.ts b/utils/apiCallLog.test.ts
+index 16c0547..3f9855a 100644
+--- a/utils/apiCallLog.test.ts
++++ b/utils/apiCallLog.test.ts
+@@ -117,5 +117,11 @@ describe('one-shot full API request capture', () => {
+         expect(extractApiTokenUsage({ usage: { input_tokens: 70, output_tokens: 20 } }))
+-            .toEqual({ prompt: 70, completion: 20, total: undefined });
++            .toEqual({ prompt: 70, completion: 20, total: 90, cacheCreation: undefined, cacheRead: undefined });
+         expect(extractApiTokenUsage({ usageMetadata: { promptTokenCount: 80, candidatesTokenCount: 10, totalTokenCount: 90 } }))
+             .toEqual({ prompt: 80, completion: 10, total: 90 });
++        expect(extractApiTokenUsage({ usage: {
++            input_tokens: 100,
++            output_tokens: 12,
++            cache_creation_input_tokens: 80,
++            cache_read_input_tokens: 20,
++        } })).toEqual({ prompt: 200, completion: 12, total: 212, cacheCreation: 80, cacheRead: 20 });
+     });
+diff --git a/utils/apiCallLog.ts b/utils/apiCallLog.ts
+index cd95445..f4fbc95 100644
+--- a/utils/apiCallLog.ts
++++ b/utils/apiCallLog.ts
+@@ -59,2 +59,6 @@ export interface ApiCallLogEntry extends ApiCallMeta {
+     totalTokens?: number;
++    /** Anthropic prompt cache tokens written by this request. */
++    cacheCreationInputTokens?: number;
++    /** Anthropic prompt cache tokens read by this request. */
++    cacheReadInputTokens?: number;
+     /** 请求从发起到响应 / 报错的耗时 ms（NetworkError 类失败时 = 等了多久才断） */
+@@ -125,2 +129,4 @@ export interface ApiRequestCapture {
+     totalTokens?: number;
++    cacheCreationInputTokens?: number;
++    cacheReadInputTokens?: number;
+     usageStatus?: 'pending' | 'reported' | 'not-reported' | 'failed';
+@@ -164,3 +170,3 @@ function stripTrailingSlash(s: string): string {
+ function deriveBaseUrl(url: string): string {
+-    return stripTrailingSlash(url.replace(/\/chat\/completions\/?$/i, ''));
++    return stripTrailingSlash(url.replace(/(?:\/chat\/completions|\/messages)\/?$/i, ''));
+ }
+@@ -275,3 +281,9 @@ function resolvePresetName(baseUrl: string, model: string): string {
+ /** 从 OpenAI 兼容响应里抠 usage（各家代理大多遵循这个字段）。 */
+-export function extractApiTokenUsage(response: unknown): { prompt?: number; completion?: number; total?: number } {
++export function extractApiTokenUsage(response: unknown): {
++    prompt?: number;
++    completion?: number;
++    total?: number;
++    cacheCreation?: number;
++    cacheRead?: number;
++} {
+     const root = response as any;
+@@ -280,7 +292,14 @@ export function extractApiTokenUsage(response: unknown): { prompt?: number; comp
+     const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+-    return {
+-        prompt: num(usage.prompt_tokens ?? usage.input_tokens ?? usage.promptTokenCount),
+-        completion: num(usage.completion_tokens ?? usage.output_tokens ?? usage.candidatesTokenCount),
+-        total: num(usage.total_tokens ?? usage.totalTokenCount),
+-    };
++    const completion = num(usage.completion_tokens ?? usage.output_tokens ?? usage.candidatesTokenCount);
++    const cacheCreation = num(usage.cache_creation_input_tokens ?? usage.cacheCreationInputTokens);
++    const cacheRead = num(usage.cache_read_input_tokens ?? usage.cacheReadInputTokens);
++    const anthropicInput = num(usage.input_tokens);
++    const prompt = anthropicInput != null && usage.prompt_tokens == null
++        ? anthropicInput + (cacheCreation ?? 0) + (cacheRead ?? 0)
++        : num(usage.prompt_tokens ?? usage.promptTokenCount);
++    const reportedTotal = num(usage.total_tokens ?? usage.totalTokenCount);
++    const total = reportedTotal ?? (anthropicInput != null && prompt != null
++        ? prompt + (completion ?? 0)
++        : undefined);
++    return { prompt, completion, total, cacheCreation, cacheRead };
+ }
+@@ -915,2 +934,4 @@ export function updateApiRequestCaptureUsage(input: {
+             totalTokens: usage.total,
++            cacheCreationInputTokens: usage.cacheCreation,
++            cacheReadInputTokens: usage.cacheRead,
+             usageStatus: !input.ok ? 'failed' : usage.prompt != null ? 'reported' : 'not-reported',
+@@ -971,2 +992,4 @@ export function recordApiCall(input: {
+             totalTokens: usage.total,
++            cacheCreationInputTokens: usage.cacheCreation,
++            cacheReadInputTokens: usage.cacheRead,
+             durationMs: input.durationMs,
+diff --git a/utils/apiConfigNormalize.test.ts b/utils/apiConfigNormalize.test.ts
+index cc2c02e..a2e8249 100644
+--- a/utils/apiConfigNormalize.test.ts
++++ b/utils/apiConfigNormalize.test.ts
+@@ -7,2 +7,7 @@ import {
+ 
++const normalizeWithoutCacheTtl = (config: any) => {
++  const { anthropicPromptCacheTtl: _ignored, ...rest } = normalizeApiConfig(config);
++  return rest;
++};
++
+ describe('API config normalization', () => {
+@@ -16,4 +21,11 @@ describe('API config normalization', () => {
+ 
++  it('uses one hour for missing or invalid Anthropic cache TTLs', () => {
++    const base = { baseUrl: '', apiKey: '', model: '' };
++    expect(normalizeApiConfig(base).anthropicPromptCacheTtl).toBe('1h');
++    expect(normalizeApiConfig({ ...base, anthropicPromptCacheTtl: 'invalid' as any }).anthropicPromptCacheTtl).toBe('1h');
++    expect(normalizeApiConfig({ ...base, anthropicPromptCacheTtl: '5m' }).anthropicPromptCacheTtl).toBe('5m');
++  });
++
+   it('keeps unrelated API settings intact', () => {
+-    expect(normalizeApiConfig({
++    expect(normalizeWithoutCacheTtl({
+       baseUrl: ' https://api.example.com/v1/ ',
+@@ -33,2 +45,2 @@ describe('API config normalization', () => {
+   });
+-});
++});
+\ No newline at end of file
+diff --git a/utils/apiConfigNormalize.ts b/utils/apiConfigNormalize.ts
+index 4c5ebf1..a2a77b4 100644
+--- a/utils/apiConfigNormalize.ts
++++ b/utils/apiConfigNormalize.ts
+@@ -1,2 +1,2 @@
+-import type { APIConfig, ApiPreset } from '../types';
++import type { APIConfig, AnthropicPromptCacheTtl, ApiPreset } from '../types';
+ 
+@@ -17,2 +17,5 @@ export const normalizeApiModel = (value: unknown): string =>
+   cleanEdgeCharacters(value);
++export const normalizeAnthropicPromptCacheTtl = (value: unknown): AnthropicPromptCacheTtl =>
++  value === '5m' || value === '1h' ? value : '1h';
++
+ 
+@@ -24,2 +27,3 @@ export function normalizeApiConfig(config: APIConfig): APIConfig {
+     model: normalizeApiModel(config.model),
++    anthropicPromptCacheTtl: normalizeAnthropicPromptCacheTtl(config.anthropicPromptCacheTtl),
+   };
+diff --git a/utils/devDebug.ts b/utils/devDebug.ts
+index f3776ae..407934f 100644
+--- a/utils/devDebug.ts
++++ b/utils/devDebug.ts
+@@ -107,3 +107,4 @@ const MAX_LOG_STORAGE_CHARS = 1_000_000;
+ // 留着没省到多少空间，要看就开「记录完整内容」。
+-const SECRET_KEY_PATTERN = /(api[-_]?key|authorization|bearer|token|secret|endpoint|p256dh|auth)$/i;
++const SECRET_KEY_PATTERN = /(api[-_]?key|authorization|bearer|token|secret|endpoint|p256dh|auth|thinking|signature)$/i;
++const SENSITIVE_ANTHROPIC_BLOCK_TYPES = new Set(['thinking', 'redacted_thinking']);
+ let memoryLog: DevDebugLogEntry[] | null = null;
+@@ -290,4 +291,11 @@ function redactSecrets(value: unknown): unknown {
+ 
++    const source = value as Record<string, unknown>;
++    const type = typeof source.type === 'string' ? source.type : '';
++    // Native Anthropic tool continuations carry encrypted thinking blocks. Keep
++    // only their type as a diagnostic; never persist their body, signature, or
++    // redacted data, even when the developer explicitly exposes log detail.
++    if (SENSITIVE_ANTHROPIC_BLOCK_TYPES.has(type)) return { type, redacted: true };
++
+     const out: Record<string, unknown> = {};
+-    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
++    for (const [key, item] of Object.entries(source)) {
+         if (SECRET_KEY_PATTERN.test(key)) {
+diff --git a/utils/independentTextApi.test.ts b/utils/independentTextApi.test.ts
+new file mode 100644
+index 0000000..08b5bec
+--- /dev/null
++++ b/utils/independentTextApi.test.ts
+@@ -0,0 +1,37 @@
++import { describe, expect, it } from 'vitest';
++import type { APIConfig } from '../types';
++import { hasIndependentTextApi, resolveIndependentTextApi } from './independentTextApi';
++
++const main: APIConfig = {
++  baseUrl: 'https://main.example/v1', apiKey: ['fixture', 'main'].join('-'), model: 'main-model',
++  anthropicNative: true, anthropicPromptCache: true, stream: true, temperature: 0.3,
++};
++
++describe('independent text API resolver', () => {
++  it('falls back as a whole when the override is absent or incomplete', () => {
++    expect(resolveIndependentTextApi(main)).toBe(main);
++    expect(resolveIndependentTextApi(main, { baseUrl: 'https://independent.example' })).toBe(main);
++    expect(hasIndependentTextApi({ baseUrl: ' ', model: 'x' })).toBe(false);
++  });
++
++  it('uses the complete independent snapshot without inheriting the main key or protocol fields', () => {
++    const effective = resolveIndependentTextApi(main, {
++      baseUrl: ' https://independent.example/v1/ ', apiKey: '', model: ' independent-model ',
++      anthropicNative: false, anthropicPromptCache: true, stream: false, temperature: 1.1,
++    });
++    expect(effective).toMatchObject({
++      baseUrl: 'https://independent.example/v1/', apiKey: '', model: 'independent-model',
++      anthropicNative: false, anthropicPromptCache: false, stream: false, temperature: 1.1,
++    });
++  });
++
++  it('only enables the one-hour Anthropic cache in native mode', () => {
++    const effective = resolveIndependentTextApi(main, {
++      baseUrl: 'https://independent.example', model: 'claude', anthropicNative: true, anthropicPromptCache: true,
++    });
++    expect(effective.apiKey).toBe('');
++    expect(effective.anthropicPromptCache).toBe(true);
++    expect(effective.stream).toBe(false);
++    expect(effective.temperature).toBeUndefined();
++  });
++});
+diff --git a/utils/independentTextApi.ts b/utils/independentTextApi.ts
+new file mode 100644
+index 0000000..e9ee47e
+--- /dev/null
++++ b/utils/independentTextApi.ts
+@@ -0,0 +1,27 @@
++import type { APIConfig, IndependentTextApiConfig } from '../types';
++
++/** 独立文本 API 只有 URL 和模型都存在时才启用，避免半份配置字段混搭。 */
++export const hasIndependentTextApi = (config?: IndependentTextApiConfig | null): boolean =>
++  !!config?.baseUrl?.trim() && !!config?.model?.trim();
++
++/**
++ * 回退时原样使用聊天主 API；独立启用时，所有文本请求相关字段都来自独立快照。
++ * 空 Key 是有意的独立 Key，绝不能从主 API 借用；Anthropic 缓存只允许在原生协议下生效。
++ */
++export const resolveIndependentTextApi = (
++  main: APIConfig,
++  override?: IndependentTextApiConfig | null,
++): APIConfig => {
++  if (!hasIndependentTextApi(override)) return main;
++  const anthropicNative = !!override!.anthropicNative;
++  return {
++    ...main,
++    baseUrl: override!.baseUrl!.trim(),
++    apiKey: override!.apiKey ?? '',
++    model: override!.model!.trim(),
++    anthropicNative,
++    anthropicPromptCache: anthropicNative && !!override!.anthropicPromptCache,
++    stream: override!.stream ?? false,
++    temperature: override!.temperature,
++  };
++};
+diff --git a/utils/instantPushClient.anthropicNative.test.ts b/utils/instantPushClient.anthropicNative.test.ts
+new file mode 100644
+index 0000000..a1c2d78
+--- /dev/null
++++ b/utils/instantPushClient.anthropicNative.test.ts
+@@ -0,0 +1,20 @@
++import { describe, expect, it } from 'vitest';
++import { readFileSync } from 'node:fs';
++import { fileURLToPath } from 'node:url';
++
++const src = readFileSync(
++  fileURLToPath(new URL('./instantPushClient.ts', import.meta.url)),
++  'utf8',
++);
++
++describe('Native Anthropic Instant Push guard', () => {
++  it('fails closed before creating a subscription or calling the Worker', () => {
++    const start = src.indexOf('export async function sendTestInstantPush');
++    const end = src.indexOf('\n}', start) + 2;
++    const fn = src.slice(start, end);
++    const nativeGuard = fn.indexOf('apiConfig.anthropicNative === true');
++    expect(nativeGuard).toBeGreaterThan(-1);
++    expect(nativeGuard).toBeLessThan(fn.indexOf('getOrCreateInstantSubscription'));
++    expect(nativeGuard).toBeLessThan(fn.indexOf('return sendInstantPush'));
++  });
++});
+diff --git a/utils/instantPushClient.ts b/utils/instantPushClient.ts
+index 3b843fc..bc1da86 100644
+--- a/utils/instantPushClient.ts
++++ b/utils/instantPushClient.ts
+@@ -14,2 +14,3 @@ import { INSTANT_WORKER_VERSION } from './instantWorkerVersion';
+ import { appendInstantTraceEntry } from './instantTraceLog';
++import { resolveAnthropicMessagesUrl } from './anthropicNative';
+ 
+@@ -19,2 +20,10 @@ export const INSTANT_PUSH_CONFIG_KEY = 'instant_push_config_v1';
+ 
++/** Mark an Anthropic-native endpoint for the private Instant Push Worker adapter. */
++export function resolveInstantAnthropicBridgeUrl(baseUrl: string): string {
++  const endpoint = new URL(resolveAnthropicMessagesUrl(baseUrl));
++  endpoint.pathname = endpoint.pathname.replace(/\/messages\/?$/i, '/chat/completions');
++  endpoint.searchParams.set('__sully_anthropic', '1');
++  return endpoint.toString();
++}
++
+ // ── Diagnostics ────────────────────────────────────────────────────────────
+@@ -289,2 +298,5 @@ export interface InstantPushPayload {
+   pushSubscription: PushSubscriptionInfo;
++  /** Worker-side native Anthropic transport request; ignored by older workers. */
++  anthropicNative?: boolean;
++  anthropicPromptCache?: boolean;
+   // completePrompt 与 messages 二选一：worker 端 amsg-instant 0.5.0+ 同时认这两路。
+@@ -1268,2 +1280,7 @@ export async function sendTestInstantPush(
+   }
++  // The deployed Instant Worker only speaks the OpenAI-compatible transport.
++  // Never send native credentials or a request it cannot faithfully execute.
++  if (apiConfig.anthropicNative === true) {
++    return { ok: false, error: '原生 Anthropic API 不支持 Instant Push 测试；请使用本地聊天模式' };
++  }
+ 
+@@ -1296,2 +1313,4 @@ export async function sendTestInstantPush(
+     metadata: { test: true },
++    anthropicNative: apiConfig.anthropicNative === true,
++    anthropicPromptCache: apiConfig.anthropicPromptCache === true,
+   });
+diff --git a/utils/safeApi.apiCallLog.test.ts b/utils/safeApi.apiCallLog.test.ts
+index ddc6fa4..d217619 100644
+--- a/utils/safeApi.apiCallLog.test.ts
++++ b/utils/safeApi.apiCallLog.test.ts
+@@ -1,2 +1,9 @@
+ import { beforeEach, describe, expect, it, vi } from 'vitest';
++import {
++    clearDevDebugLog,
++    DEFAULT_DEV_DEBUG_FLAGS,
++    DEV_DEBUG_LOG_STORAGE_KEY,
++    unlockDevDebug,
++    writeDevDebugFlags,
++} from './devDebug';
+ 
+@@ -17,2 +24,13 @@ describe('safeFetchJson API log fallback', () => {
+         vi.restoreAllMocks();
++        vi.stubGlobal('window', {
++            localStorage: globalThis.localStorage,
++            addEventListener: () => {},
++            removeEventListener: () => {},
++            dispatchEvent: () => true,
++        });
++        vi.stubGlobal('CustomEvent', class { constructor(public type: string, public init?: unknown) {} });
++        globalThis.localStorage.clear();
++        unlockDevDebug();
++        clearDevDebugLog();
++        writeDevDebugFlags({ ...DEFAULT_DEV_DEBUG_FLAGS, captureEnabled: true, captureLogs: ['api'], exposeLogDetail: true });
+     });
+@@ -49,2 +67,126 @@ describe('safeFetchJson API log fallback', () => {
+     });
++
++    it('records Anthropic native /v1/messages responses with cache usage', async () => {
++        const responseBody = {
++            model: 'claude-opus-4-6',
++            content: [{ type: 'text', text: 'ok' }],
++            usage: {
++                input_tokens: 100,
++                output_tokens: 8,
++                cache_creation_input_tokens: 0,
++                cache_read_input_tokens: 92,
++            },
++        };
++        const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
++            JSON.stringify(responseBody),
++            { status: 200, headers: { 'content-type': 'application/json' } },
++        ));
++
++        await safeFetchJson(
++            'https://api.test/relay/messages/?trace=1',
++            { method: 'POST', body: JSON.stringify({ model: 'claude-opus-4-6', messages: [{ role: 'user', content: 'hi' }] }) },
++            0,
++            0,
++            { appName: '消息', purpose: '聊天回复' },
++        );
++
++        const requestInit = fetchMock.mock.calls[0][1] as RequestInit & { __sullyApiCallId?: string };
++        expect(requestInit.__sullyApiCallId).toMatch(/^api-/);
++        expect(mocks.recordApiCall).toHaveBeenCalledWith(expect.objectContaining({
++            requestId: requestInit.__sullyApiCallId,
++            ok: true,
++            response: responseBody,
++        }));
++    });
++
++    it('redacts native thinking blocks before the enabled DevDebug log is persisted', async () => {
++        const marker = (part: string) => ['fixture', part].join('-');
++        const requestSecret = marker('request-thinking');
++        const signatureSecret = marker('signature');
++        const redactedDataSecret = marker('redacted-data');
++        const responseSecret = marker('response-thinking');
++        const apiKeySecret = marker('api-key');
++        const responseBody = {
++            model: 'claude-opus-4-6',
++            content: [
++                { type: 'thinking', thinking: responseSecret, signature: signatureSecret },
++                { type: 'redacted_thinking', data: redactedDataSecret },
++                { type: 'text', text: 'normal response text' },
++                { type: 'tool_use', id: 'toolu_1', name: 'weather', input: { city: 'Beijing' } },
++            ],
++            usage: { input_tokens: 100, output_tokens: 8, cache_read_input_tokens: 92 },
++        };
++        vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
++            JSON.stringify(responseBody),
++            { status: 200, headers: { 'content-type': 'application/json' } },
++        ));
++        await safeFetchJson('https://api.test/relay/messages', {
++            method: 'POST',
++            body: JSON.stringify({
++                model: 'claude-opus-4-6',
++                api_key: apiKeySecret,
++                messages: [{ role: 'assistant', content: [
++                    { type: 'thinking', thinking: requestSecret, signature: signatureSecret },
++                    { type: 'redacted_thinking', data: redactedDataSecret },
++                    { type: 'text', text: 'normal request text' },
++                    { type: 'tool_use', id: 'toolu_1', name: 'weather', input: { city: 'Beijing' } },
++                ] }],
++            }),
++        }, 0, 0, { appName: '消息', purpose: '聊天回复' });
++
++        const persisted = globalThis.localStorage.getItem(`${DEV_DEBUG_LOG_STORAGE_KEY}.test`) || '';
++        expect(persisted).not.toContain(requestSecret);
++        expect(persisted).not.toContain(responseSecret);
++        expect(persisted).not.toContain(signatureSecret);
++        expect(persisted).not.toContain(redactedDataSecret);
++        expect(persisted).not.toContain(apiKeySecret);
++        expect(persisted).toContain('normal response text');
++        expect(persisted).toContain('weather');
++        expect(mocks.recordApiCall).toHaveBeenCalledWith(expect.objectContaining({
++            response: responseBody,
++            ok: true,
++        }));
++    });
++
++    it('only classifies terminal Messages pathnames as chat requests', async () => {
++        const responseBody = { model: 'backend-model', usage: { input_tokens: 1, output_tokens: 1 } };
++        const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(
++            JSON.stringify(responseBody),
++            { status: 200, headers: { 'content-type': 'application/json' } },
++        ));
++        for (const url of [
++            'https://messages',
++            'https://api.test/relay/messages-extra',
++            'https://api.test/?next=/messages',
++        ]) {
++            await safeFetchJson(url, { method: 'POST', body: JSON.stringify({ model: 'requested-model' }) }, 0);
++        }
++        expect(fetchMock).toHaveBeenCalledTimes(3);
++        expect(mocks.recordApiCall).not.toHaveBeenCalled();
++    });
++
++    it('does not persist or throw raw truncated Anthropic thinking responses', async () => {
++        const marker = ['fixture', 'truncated-thinking'].join('-');
++        vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
++            `{"content":[{"type":"thinking","thinking":"${marker}`,
++            { status: 200, headers: { 'content-type': 'application/json' } },
++        ));
++
++        let thrown: unknown;
++        try {
++            await safeFetchJson('https://api.test/relay/messages/?trace=1', {
++                method: 'POST',
++                body: JSON.stringify({ model: 'claude-opus-4-6', messages: [{ role: 'user', content: 'hi' }] }),
++            }, 0, 0, { appName: '消息', purpose: '聊天回复' });
++        } catch (error) {
++            thrown = error;
++        }
++
++        expect(thrown).toBeInstanceOf(Error);
++        expect((thrown as Error).message).toBe('Anthropic Messages invalid-response (HTTP 200)');
++        expect((thrown as Error).message).not.toContain(marker);
++        const persisted = globalThis.localStorage.getItem(`${DEV_DEBUG_LOG_STORAGE_KEY}.test`) || '';
++        expect(persisted).not.toContain(marker);
++        expect(mocks.recordApiCall).not.toHaveBeenCalled();
++    });
+ });
+diff --git a/utils/safeApi.ts b/utils/safeApi.ts
+index f9ca15e..7028dc8 100644
+--- a/utils/safeApi.ts
++++ b/utils/safeApi.ts
+@@ -17,4 +17,26 @@ const log = makeDebugLogger('api', 'SafeAPI');
+ 
++function requestPathname(url: string): string {
++    try {
++        return new URL(url, 'https://sully.invalid').pathname.replace(/\/+$/, '');
++    } catch {
++        return '';
++    }
++}
++
++function isAnthropicMessagesUrl(url: string): boolean {
++    return /\/messages$/i.test(requestPathname(url));
++}
++
+ function isChatCompletionUrl(url: string): boolean {
+-    return url.includes('/chat/completions');
++    return /\/(?:chat\/completions|messages)$/i.test(requestPathname(url));
++}
++
++function safeAnthropicMessagesError(status: number | undefined, error: unknown): Error {
++    const message = String((error as any)?.message || '');
++    const category = /无效JSON|流式响应未返回有效数据|HTML而非JSON|空响应/.test(message)
++        ? 'invalid-response'
++        : (error as any)?.name === 'AbortError' ? 'aborted'
++        : (error as any)?.name === 'TypeError' ? 'network'
++        : 'request-failed';
++    return new Error(`Anthropic Messages ${category} (HTTP ${status ?? 'unknown'})`);
+ }
+@@ -443,6 +465,8 @@ export async function safeFetchJson(
+             if (timeoutHandle) clearTimeout(timeoutHandle);
+-            lastError = e;
+-
+-            // AbortError（含 timeout）：是否重试看上层策略，先按可重试处理（网络层面）
++            // Preserve the original type only for retry policy. Anthropic native error
++            // details can contain truncated encrypted thinking, so no raw preview may
++            // reach DevDebug or callers after this boundary.
+             const isAbort = e?.name === 'AbortError' || /aborted|timeout/i.test(e?.message || '');
++            const safeError = isAnthropicMessagesUrl(urlStr) ? safeAnthropicMessagesError(lastStatus, e) : e;
++            lastError = safeError;
+ 
+@@ -451,3 +475,3 @@ export async function safeFetchJson(
+                 const delay = Math.pow(2, attempt) * 1000;
+-                log.warn(isAbort ? 'Timeout/Abort retry' : 'Network error retry', { attempt: attempt + 1, maxRetries, delay, message: e?.message });
++                log.warn(isAbort ? 'Timeout/Abort retry' : 'Network error retry', { attempt: attempt + 1, maxRetries, delay, message: safeError?.message });
+                 await new Promise(r => setTimeout(r, delay));
+@@ -470,3 +494,3 @@ export async function safeFetchJson(
+                     requestBody: options.body,
+-                    error: e,
++                    error: safeError,
+                     durationMs: Date.now() - attemptStartedAt,
+@@ -474,3 +498,3 @@ export async function safeFetchJson(
+             }
+-            throw e;
++            throw safeError;
+         }
+diff --git a/utils/settingsAnthropicNative.wiring.test.ts b/utils/settingsAnthropicNative.wiring.test.ts
+new file mode 100644
+index 0000000..5fae6cb
+--- /dev/null
++++ b/utils/settingsAnthropicNative.wiring.test.ts
+@@ -0,0 +1,24 @@
++import { readFileSync } from 'node:fs';
++import { fileURLToPath } from 'node:url';
++import { describe, expect, it } from 'vitest';
++
++const settingsSource = readFileSync(fileURLToPath(new URL('../apps/Settings.tsx', import.meta.url)), 'utf8');
++
++describe('Settings Anthropic native wiring', () => {
++  it('keeps native/cache/TTL settings synchronized through load, create, and update presets', () => {
++    expect(settingsSource).toContain('const [localAnthropicNative, setLocalAnthropicNative]');
++    expect(settingsSource).toContain('setLocalAnthropicNative(apiConfig.anthropicNative === true)');
++    expect(settingsSource).toContain('setLocalAnthropicNative(preset.config.anthropicNative === true)');
++    expect(settingsSource).toContain('anthropicNative: localAnthropicNative');
++    expect(settingsSource).toContain('anthropicPromptCache: localAnthropicPromptCache');
++    expect(settingsSource).toContain('anthropicPromptCacheTtl: localAnthropicPromptCacheTtl');
++  });
++
++  it('exposes native/cache controls and delegates connection probes to the protocol-aware helper', () => {
++    expect(settingsSource).toContain('Anthropic 原生 Messages');
++    expect(settingsSource).toContain('disabled={!localAnthropicNative}');
++    expect(settingsSource).toContain('buildSettingsApiConnectionRequest({');
++    expect(settingsSource).toContain('anthropicNative: localAnthropicNative');
++    expect(settingsSource).toContain('fetch(request.url, request.init)');
++  });
++});
+diff --git a/utils/settingsApiConnection.test.ts b/utils/settingsApiConnection.test.ts
+new file mode 100644
+index 0000000..f01cabc
+--- /dev/null
++++ b/utils/settingsApiConnection.test.ts
+@@ -0,0 +1,59 @@
++import { describe, expect, it } from 'vitest';
++import { buildSettingsApiConnectionRequest, extractNativeSettingsConnectionReply } from './settingsApiConnection';
++
++const probeKey = ['fixture', 'key'].join('-');
++
++describe('Settings API connection request', () => {
++  it('uses the native Messages endpoint, headers, and body when enabled', () => {
++    const request = buildSettingsApiConnectionRequest({
++      baseUrl: 'https://relay.example/relay/messages',
++      apiKey: probeKey,
++      model: 'claude-test',
++      stream: true,
++      anthropicNative: true,
++    });
++
++    expect(request.url).toBe('https://relay.example/relay/messages');
++    expect(request.init.headers).toEqual({
++      'Content-Type': 'application/json',
++      'x-api-key': probeKey,
++      'anthropic-version': '2023-06-01',
++    });
++    expect(request.init.headers).not.toHaveProperty('Authorization');
++    expect(JSON.parse(String(request.init.body))).toMatchObject({
++      model: 'claude-test',
++      max_tokens: 5,
++      stream: false,
++      messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
++    });
++  });
++
++  it('keeps the OpenAI-compatible probe unchanged when native mode is disabled', () => {
++    const request = buildSettingsApiConnectionRequest({
++      baseUrl: 'https://relay.example/v1/',
++      apiKey: probeKey,
++      model: 'compat-test',
++      stream: true,
++      anthropicNative: false,
++    });
++
++    expect(request.url).toBe('https://relay.example/v1/chat/completions');
++    expect(request.init.headers).toEqual({ 'Content-Type': 'application/json', Authorization: `Bearer ${probeKey}` });
++    expect(request.init.headers).not.toHaveProperty('x-api-key');
++    expect(JSON.parse(String(request.init.body))).toEqual({
++      model: 'compat-test',
++      messages: [{ role: 'user', content: 'Hi' }],
++      max_tokens: 5,
++      stream: true,
++    });
++  });
++  it('extracts text from a successful native Messages response for the Settings preview', () => {
++    expect(extractNativeSettingsConnectionReply({
++      content: [
++        { type: 'thinking', thinking: 'not a preview' },
++        { type: 'text', text: 'ok' },
++        { type: 'tool_use', name: 'weather' },
++      ],
++    })).toBe('ok');
++  });
++});
+diff --git a/utils/settingsApiConnection.ts b/utils/settingsApiConnection.ts
+new file mode 100644
+index 0000000..0105f89
+--- /dev/null
++++ b/utils/settingsApiConnection.ts
+@@ -0,0 +1,56 @@
++import type { APIConfig } from '../types';
++import { resolveAnthropicMessagesUrl, toAnthropicRequest } from './anthropicNative';
++import { normalizeApiBaseUrl, normalizeApiCredential, normalizeApiModel } from './apiConfigNormalize';
++
++type ConnectionConfig = Pick<APIConfig, 'baseUrl' | 'apiKey' | 'model' | 'stream' | 'anthropicNative'>;
++
++export interface SettingsApiConnectionRequest {
++  url: string;
++  init: RequestInit;
++}
++
++/** Read text from a successful native Messages probe without exposing thinking blocks. */
++export const extractNativeSettingsConnectionReply = (response: unknown): string =>
++  Array.isArray((response as any)?.content)
++    ? (response as any).content
++      .filter((block: any) => block?.type === 'text')
++      .map((block: any) => String(block.text ?? ''))
++      .join('')
++    : '';
++
++/** Build the Settings connection probe with the same protocol selected for chat. */
++export const buildSettingsApiConnectionRequest = (config: ConnectionConfig): SettingsApiConnectionRequest => {
++  const baseUrl = normalizeApiBaseUrl(config.baseUrl);
++  const apiKey = normalizeApiCredential(config.apiKey);
++  const model = normalizeApiModel(config.model);
++  const body = {
++    model,
++    messages: [{ role: 'user', content: 'Hi' }],
++    max_tokens: 5,
++    stream: config.stream === true,
++  };
++
++  if (config.anthropicNative === true) {
++    return {
++      url: resolveAnthropicMessagesUrl(baseUrl),
++      init: {
++        method: 'POST',
++        headers: {
++          'Content-Type': 'application/json',
++          'x-api-key': apiKey,
++          'anthropic-version': '2023-06-01',
++        },
++        body: JSON.stringify(toAnthropicRequest(body)),
++      },
++    };
++  }
++
++  return {
++    url: `${baseUrl}/chat/completions`,
++    init: {
++      method: 'POST',
++      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
++      body: JSON.stringify(body),
++    },
++  };
++};

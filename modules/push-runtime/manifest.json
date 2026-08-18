@@ -1,1 +1,1 @@
-{"id":"push-runtime","status":"inventory","releaseBoundary":"mixed","dependsOn":["core-integration","anthropic-api-cache"],"summary":"Instant Push、AMSG 2、FCM/Web Push 与 Worker 兼容层。","containsSecrets":false,"applySupported":false}
+{"id":"push-runtime","status":"inventory","releaseBoundary":"mixed","dependsOn":["core-integration","anthropic-api-cache"],"summary":"仅盘点 Instant Push、AMSG2 与 Proactive 的独立客户端/Worker 候选；不含部署、D1、订阅或凭据。","containsSecrets":false,"applySupported":false}

@@ -10,7 +10,7 @@
 
 ## 非目标
 
-- 只有 `emotion-safety` 是 `ready` 且可应用；其余模块仍为 `inventory`。
+- `core-integration → emotion-safety → memory-ombre` 是记忆链；`anthropic-api-cache` 与 `free-activity-mcp` 是从 core 分出的独立分支。五者均为可重放 `ready` 补丁，其余模块仍为 `inventory`。
 - 不包含密钥、部署配置或生产数据；生产 evidence 只记录可复核事实，不替代完整源码快照。
 - 不会自动修改目标仓库、解决冲突、生成发布包或部署。
 
@@ -22,10 +22,14 @@
 
 ```powershell
 npm run check
+$env:SULLY_BASELINE_REPO = 'C:\\path\\to\\frozen-sully-baseline'
 npm test
 node scripts/preflight.mjs --target .\sully-baseline-copy
-node scripts/apply-module.mjs emotion-safety --target .\sully-baseline-copy
-node scripts/apply-module.mjs emotion-safety --target .\sully-baseline-copy --write
+npm run verify:memory -- --target .\sully-baseline-copy
+npm run verify:anthropic -- --target .\another-clean-baseline-copy
+npm run verify:free-activity -- --target .\third-clean-baseline-copy
 ```
+
+不设置 `SULLY_BASELINE_REPO` 时，真实 clone 应用器测试会被明确跳过；它只能用于本地快速检查，不能作为发布或迁移验收。发布门禁必须设置该变量并运行完整测试。
 
 详见 [架构说明](docs/architecture.md) 与 [验收标准](docs/acceptance.md)。

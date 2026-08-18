@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schemaVersion", "kind", "upstream", "modules"],
   "properties": {
-    "schemaVersion": { "const": "1.0" },
+    "schemaVersion": { "const": "1.1" },
     "kind": { "enum": ["inventory-only", "mixed"] },
     "upstream": {
       "type": "object",
@@ -26,7 +26,7 @@
         "required": ["id", "status", "manifest"],
         "properties": {
           "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
-          "status": { "enum": ["inventory", "ready"] },
+          "status": { "enum": ["inventory", "ready", "baseline-provided"] },
           "manifest": { "type": "string", "pattern": "^modules/[a-z0-9-]+/manifest\\.json$" }
         }
       }
